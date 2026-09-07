@@ -20,7 +20,7 @@ exports.register = asyncHandler(async (req, res) => {
   await Cart.create({ userId: user._id, items: [] });
   const token = signToken(user);
   setAuthCookie(res, token);
-  res.status(201).json({ user: user.toPublic() });
+  res.status(201).json({ user: user.toPublic(), token });
 });
 
 exports.login = asyncHandler(async (req, res) => {
@@ -31,7 +31,7 @@ exports.login = asyncHandler(async (req, res) => {
   if (!ok) return res.status(401).json({ message: 'Invalid email or password.' });
   const token = signToken(user);
   setAuthCookie(res, token);
-  res.json({ user: user.toPublic() });
+  res.json({ user: user.toPublic(), token });
 });
 
 exports.logout = asyncHandler(async (_req, res) => {
@@ -40,7 +40,8 @@ exports.logout = asyncHandler(async (_req, res) => {
 });
 
 exports.me = asyncHandler(async (req, res) => {
-  res.json({ user: req.user ? req.user.toPublic() : null });
+  if (!req.user) return res.json({ user: null, token: null });
+  res.json({ user: req.user.toPublic() });
 });
 
 exports.updateProfile = asyncHandler(async (req, res) => {

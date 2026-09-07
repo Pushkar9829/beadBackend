@@ -26,8 +26,14 @@ function clearAuthCookie(res) {
   res.clearCookie('token', { ...cookieOptions(), maxAge: 0 });
 }
 
+function readToken(req) {
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Bearer ')) return header.slice(7).trim();
+  return req.cookies?.token || null;
+}
+
 async function optionalAuth(req, res, next) {
-  const token = req.cookies?.token;
+  const token = readToken(req);
   if (!token) return next();
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
@@ -39,7 +45,7 @@ async function optionalAuth(req, res, next) {
 }
 
 async function requireAuth(req, res, next) {
-  const token = req.cookies?.token;
+  const token = readToken(req);
   if (!token) return res.status(401).json({ message: 'Please sign in to continue.' });
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
