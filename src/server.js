@@ -21,9 +21,36 @@ const adminRoutes = require('./routes/adminRoutes');
 const app = express();
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+const DEFAULT_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'https://beads-front-end.vercel.app',
+];
+
+const extraOrigins = String(process.env.CLIENT_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...DEFAULT_ORIGINS, ...extraOrigins])];
+
+function originAllowed(origin) {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'beads-front-end.vercel.app' || hostname.endsWith('.beads-front-end.vercel.app');
+  } catch {
+    return false;
+  }
+}
+
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
+    origin(origin, cb) {
+      if (originAllowed(origin)) return cb(null, true);
+      return cb(new Error(`CORS blocked for ${origin}`));
+    },
     credentials: true,
   })
 );
