@@ -184,7 +184,9 @@ async function calibrate({
   ]);
 
   const beadLimit = config?.beadLimit || 18;
-  const qtyZ = Number(zodiacQty || config?.zodiacBeadCount || 2);
+  const qtyZ = Number.isFinite(Number(zodiacQty)) && Number(zodiacQty) > 0
+    ? Number(zodiacQty)
+    : (config?.zodiacBeadCount || 2);
   const layout = buildLayout({
     intentionBeads,
     mulank,
