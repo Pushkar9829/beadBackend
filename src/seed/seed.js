@@ -12,7 +12,10 @@ const Charm = require('../models/Charm');
 const BraceletConfig = require('../models/BraceletConfig');
 const SiteContent = require('../models/SiteContent');
 const Cart = require('../models/Cart');
+const MulankCrystal = require('../models/MulankCrystal');
+const ZodiacBead = require('../models/ZodiacBead');
 const { slugifyName } = require('../utils/asyncHandler');
+const { seedNumerologyMappings } = require('./seedNumerology');
 
 const DISCLAIMER =
   'These are traditional and spiritual associations, not medical claims. Kuberstones products are not intended to diagnose, treat, or cure any condition.';
@@ -296,6 +299,8 @@ async function run() {
     BraceletConfig.deleteMany({}),
     SiteContent.deleteMany({}),
     Cart.deleteMany({}),
+    MulankCrystal.deleteMany({}),
+    ZodiacBead.deleteMany({}),
   ]);
 
   const adminHash = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'Admin@123', 10);
@@ -546,6 +551,7 @@ async function run() {
     });
   });
   await IntentionBead.insertMany(mappings);
+  await seedNumerologyMappings(beadByName);
 
   await Charm.create({
     name: 'Oval',
@@ -565,6 +571,7 @@ async function run() {
     baseMakingPrice: 499,
     wristSizes: ['5.5"', '6"', '6.5"', '7"', '7.5"', '8"'],
     defaultWristSize: '6.5"',
+    zodiacBeadCount: 2,
   });
 
   await SiteContent.create({
@@ -572,12 +579,12 @@ async function run() {
     hero: {
       eyebrow: 'ENERGY • ABUNDANCE • WELLNESS',
       title: 'Heal. Align. Attract abundance.',
-      subtitle: 'Build a personal bracelet from purpose and intention — every crystal chosen with a reason, every quantity yours.',
+      subtitle: 'Choose a purpose, then an intention. Your crystals are calibrated from your Mulank and finished with zodiac beads and a name.',
     },
     about: {
       headline: 'Jewellery as a quiet ritual',
       tagline: 'Editorial luxury for modern seekers.',
-      body: 'Kuberstones is a contemporary jewellery house working with crystals, rudraksha and gemstones. We design for intention without theatre — pieces you can wear to a meeting or a meditation. Customize Your Bracelet is the heart of the brand: you choose a purpose, a precise intention, then the beads themselves, in the quantities that feel right, up to the strand’s limit.\n\nEvery recommendation is tied to a traditional association, written in plain language. We do not make medical claims. Authenticity, careful making and a calm buying experience matter more than spectacle.',
+      body: 'Kuberstones is a contemporary jewellery house working with crystals, rudraksha and gemstones. Customize Your Bracelet is the heart of the brand: you choose a purpose and intention, we place the crystals from your Mulank calibration, add zodiac beads, then engrave the name you give the piece.\n\nEvery recommendation is tied to a traditional association, written in plain language. We do not make medical claims.',
     },
     trustClaims: [
       { title: 'Natural & Authentic', body: 'Stones are selected for quality and character. We describe them honestly.' },

@@ -9,6 +9,8 @@ router.get('/purposes/:purposeId/intentions', ctrl.intentions);
 router.get('/intentions/:intentionId/beads', ctrl.recommendedBeads);
 router.get('/charms', ctrl.charms);
 router.get('/config', ctrl.config);
+router.get('/beads', ctrl.beads);
+router.post('/calibrate', ctrl.calibrate);
 router.post('/quote', ctrl.quote);
 
 router.get('/admin/purposes', requireAuth, requireAdmin, ctrl.adminPurposes);
@@ -30,6 +32,16 @@ router.get('/admin/mappings', requireAuth, requireAdmin, ctrl.adminMappings);
 router.post('/admin/mappings', requireAuth, requireAdmin, ctrl.adminSaveMapping);
 router.put('/admin/mappings/:id', requireAuth, requireAdmin, ctrl.adminSaveMapping);
 router.delete('/admin/mappings/:id', requireAuth, requireAdmin, ctrl.adminDeleteMapping);
+
+router.get('/admin/mulank', requireAuth, requireAdmin, ctrl.adminMulank);
+router.post('/admin/mulank', requireAuth, requireAdmin, ctrl.adminSaveMulank);
+router.put('/admin/mulank/:id', requireAuth, requireAdmin, ctrl.adminSaveMulank);
+router.delete('/admin/mulank/:id', requireAuth, requireAdmin, ctrl.adminDeleteMulank);
+
+router.get('/admin/zodiac', requireAuth, requireAdmin, ctrl.adminZodiac);
+router.post('/admin/zodiac', requireAuth, requireAdmin, ctrl.adminSaveZodiac);
+router.put('/admin/zodiac/:id', requireAuth, requireAdmin, ctrl.adminSaveZodiac);
+router.delete('/admin/zodiac/:id', requireAuth, requireAdmin, ctrl.adminDeleteZodiac);
 
 router.get('/admin/charms', requireAuth, requireAdmin, ctrl.adminCharms);
 router.post('/admin/charms', requireAuth, requireAdmin, ctrl.adminSaveCharm);

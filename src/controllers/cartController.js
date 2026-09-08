@@ -4,12 +4,23 @@ const Bead = require('../models/Bead');
 const Charm = require('../models/Charm');
 const BraceletConfig = require('../models/BraceletConfig');
 const { calculateCustomTotal } = require('../services/pricingService');
+const { calibrate } = require('../services/calibrationService');
 const { asyncHandler } = require('../utils/asyncHandler');
 
 async function getOrCreateCart(userId) {
   let cart = await Cart.findOne({ userId });
   if (!cart) cart = await Cart.create({ userId, items: [] });
   return cart;
+}
+
+function normalizeEngraving(name) {
+  const n = String(name || '').trim().replace(/\s+/g, ' ');
+  if (n.length < 2 || n.length > 32) {
+    const err = new Error('Enter a name between 2 and 32 characters for the charm.');
+    err.status = 400;
+    throw err;
+  }
+  return n;
 }
 
 async function buildCustomSnapshot(payload) {
@@ -21,6 +32,43 @@ async function buildCustomSnapshot(payload) {
     throw err;
   }
   const finish = charm.finishes.find((f) => f.key === payload.finishKey) || charm.finishes[0];
+  const engravingName = normalizeEngraving(payload.engravingName || payload.snapshot?.engravingName);
+
+  if (payload.dateOfBirth && (payload.intentionId || payload.intention?.id)) {
+    const calibrated = await calibrate({
+      intentionId: payload.intentionId || payload.intention.id,
+      dateOfBirth: payload.dateOfBirth,
+      includeZodiac: payload.includeZodiac !== false,
+      zodiacQty: payload.zodiacQty,
+      charmId: charm._id,
+      finishKey: finish.key,
+    });
+    if (!calibrated.quote.valid) {
+      const err = new Error(calibrated.quote.errors.join(' '));
+      err.status = 400;
+      throw err;
+    }
+    return {
+      kind: 'custom_bracelet',
+      name: `${engravingName} · ${payload.intention?.name || 'Custom bracelet'}`,
+      purpose: payload.purpose,
+      intention: payload.intention,
+      dateOfBirth: calibrated.dateOfBirth,
+      mulank: calibrated.mulank,
+      bhagyank: calibrated.bhagyank,
+      mulankCrystal: calibrated.mulankCrystal,
+      zodiac: calibrated.zodiac,
+      layout: calibrated.layout,
+      beads: calibrated.beads,
+      engravingName,
+      explanation: calibrated.explanation,
+      charm: { id: charm._id, name: charm.name },
+      finish,
+      wristSize: payload.wristSize || config.defaultWristSize,
+      pricing: calibrated.quote,
+    };
+  }
+
   const beadIds = (payload.beads || []).map((b) => b.beadId);
   const beadDocs = await Bead.find({ _id: { $in: beadIds } }).lean();
   const byId = Object.fromEntries(beadDocs.map((b) => [String(b._id), b]));
@@ -66,6 +114,7 @@ async function buildCustomSnapshot(payload) {
     charm: { id: charm._id, name: charm.name },
     finish,
     wristSize: payload.wristSize || config.defaultWristSize,
+    engravingName,
     pricing: quote,
   };
 }

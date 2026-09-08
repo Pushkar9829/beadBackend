@@ -5,8 +5,11 @@ const Bead = require('../models/Bead');
 const Charm = require('../models/Charm');
 const BraceletConfig = require('../models/BraceletConfig');
 const IntentionBead = require('../models/IntentionBead');
+const MulankCrystal = require('../models/MulankCrystal');
+const ZodiacBead = require('../models/ZodiacBead');
 const { getRecommendedBeads } = require('../services/recommendationService');
 const { calculateCustomTotal } = require('../services/pricingService');
+const { calibrate } = require('../services/calibrationService');
 const { asyncHandler, slugifyName } = require('../utils/asyncHandler');
 
 exports.purposes = asyncHandler(async (_req, res) => {
@@ -40,6 +43,31 @@ exports.charms = asyncHandler(async (_req, res) => {
 exports.config = asyncHandler(async (_req, res) => {
   const config = await BraceletConfig.findOne().lean();
   res.json({ config });
+});
+
+exports.beads = asyncHandler(async (_req, res) => {
+  const beads = await Bead.find({ isActive: true })
+    .select('name slug image colorHex pricePerBead powerUse shortDescriptor')
+    .sort({ name: 1 })
+    .lean();
+  res.json({ beads });
+});
+
+exports.calibrate = asyncHandler(async (req, res) => {
+  const { intentionId, dateOfBirth, includeZodiac, zodiacQty, charmId, finishKey } = req.body || {};
+  if (!intentionId) return res.status(400).json({ message: 'Choose an intention first.' });
+  if (!dateOfBirth) return res.status(400).json({ message: 'Enter a date of birth.' });
+  const intention = await Intention.findById(intentionId).populate('purposeId', 'name slug').lean();
+  if (!intention) return res.status(404).json({ message: 'Intention not found.' });
+  const result = await calibrate({
+    intentionId,
+    dateOfBirth,
+    includeZodiac: Boolean(includeZodiac),
+    zodiacQty,
+    charmId,
+    finishKey,
+  });
+  res.json({ intention, purpose: intention.purposeId, ...result });
 });
 
 exports.quote = asyncHandler(async (req, res) => {
@@ -147,6 +175,50 @@ exports.adminSaveMapping = asyncHandler(async (req, res) => {
 
 exports.adminDeleteMapping = asyncHandler(async (req, res) => {
   await IntentionBead.findByIdAndDelete(req.params.id);
+  res.json({ ok: true });
+});
+
+exports.adminMulank = asyncHandler(async (_req, res) => {
+  const mappings = await MulankCrystal.find().populate('beadId', 'name pricePerBead').sort({ number: 1 }).lean();
+  res.json({ mappings });
+});
+
+exports.adminSaveMulank = asyncHandler(async (req, res) => {
+  const mapping = req.params.id
+    ? await MulankCrystal.findByIdAndUpdate(req.params.id, req.body, { new: true })
+    : await MulankCrystal.findOneAndUpdate(
+        { number: req.body.number },
+        req.body,
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+  res.json({ mapping });
+});
+
+exports.adminDeleteMulank = asyncHandler(async (req, res) => {
+  await MulankCrystal.findByIdAndDelete(req.params.id);
+  res.json({ ok: true });
+});
+
+exports.adminZodiac = asyncHandler(async (_req, res) => {
+  const mappings = await ZodiacBead.find().populate('beadId', 'name pricePerBead').sort({ fromMonth: 1, fromDay: 1 }).lean();
+  res.json({ mappings });
+});
+
+exports.adminSaveZodiac = asyncHandler(async (req, res) => {
+  const data = { ...req.body };
+  if (!data.slug && data.sign) data.slug = slugifyName(data.sign);
+  const mapping = req.params.id
+    ? await ZodiacBead.findByIdAndUpdate(req.params.id, data, { new: true })
+    : await ZodiacBead.findOneAndUpdate(
+        { slug: data.slug },
+        data,
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+  res.json({ mapping });
+});
+
+exports.adminDeleteZodiac = asyncHandler(async (req, res) => {
+  await ZodiacBead.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
 });
 
