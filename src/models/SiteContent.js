@@ -14,6 +14,15 @@ const siteContentSchema = new mongoose.Schema(
         body: String,
       },
     ],
+    testimonials: [
+      {
+        quote: String,
+        name: String,
+        place: String,
+        piece: String,
+        media: String,
+      },
+    ],
     hero: {
       eyebrow: String,
       title: String,

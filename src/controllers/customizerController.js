@@ -36,9 +36,39 @@ exports.recommendedBeads = asyncHandler(async (req, res) => {
 });
 
 exports.charms = asyncHandler(async (_req, res) => {
-  const charms = await Charm.find({ isActive: true }).lean();
+  const charms = await ensureStudioCharms();
   res.json({ charms });
 });
+
+async function ensureStudioCharms() {
+  const wanted = [
+    {
+      name: 'Sriyantra',
+      slug: 'sriyantra',
+      description: 'The Sriyantra charm — geometry of abundance at the clasp.',
+      isActive: true,
+      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#D4AF37' }],
+    },
+    {
+      name: 'Om',
+      slug: 'om',
+      description: 'The Om charm — a quiet seal at the clasp.',
+      isActive: true,
+      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#E8D5A3' }],
+    },
+  ];
+  const docs = [];
+  for (const charm of wanted) {
+    const saved = await Charm.findOneAndUpdate(
+      { slug: charm.slug },
+      charm,
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+    docs.push(saved);
+  }
+  await Charm.updateMany({ slug: { $nin: ['sriyantra', 'om'] } }, { isActive: false });
+  return docs.map((d) => (d.toObject ? d.toObject() : d));
+}
 
 exports.config = asyncHandler(async (_req, res) => {
   const config = await BraceletConfig.findOne().lean();
@@ -223,6 +253,7 @@ exports.adminDeleteZodiac = asyncHandler(async (req, res) => {
 });
 
 exports.adminCharms = asyncHandler(async (_req, res) => {
+  await ensureStudioCharms();
   const charms = await Charm.find().lean();
   const config = await BraceletConfig.findOne().lean();
   res.json({ charms, config });

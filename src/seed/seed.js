@@ -553,17 +553,22 @@ async function run() {
   await IntentionBead.insertMany(mappings);
   await seedNumerologyMappings(beadByName);
 
-  await Charm.create({
-    name: 'Oval',
-    slug: 'oval',
-    description: 'A refined oval charm that sits at the clasp — the finishing signature of a Kuberstones bracelet.',
-    isActive: true,
-    finishes: [
-      { key: 'gold', label: 'Gold', price: 299, metalColor: '#D4AF37' },
-      { key: 'silver', label: 'Silver', price: 249, metalColor: '#C0C0C0' },
-      { key: 'rose-gold', label: 'Rose Gold', price: 299, metalColor: '#B76E79' },
-    ],
-  });
+  await Charm.create([
+    {
+      name: 'Sriyantra',
+      slug: 'sriyantra',
+      description: 'The Sriyantra charm — geometry of abundance at the clasp.',
+      isActive: true,
+      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#D4AF37' }],
+    },
+    {
+      name: 'Om',
+      slug: 'om',
+      description: 'The Om charm — a quiet seal at the clasp.',
+      isActive: true,
+      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#E8D5A3' }],
+    },
+  ]);
 
   await BraceletConfig.create({
     beadLimit: 18,
@@ -592,6 +597,29 @@ async function run() {
       { title: 'Handmade', body: 'Each custom strand is made to your bead count, wrist size and charm finish.' },
       { title: 'Energized / Cleansed', body: 'Pieces are prepared in-house with our standard cleanse ritual before dispatch.' },
       { title: 'Secure Payments', body: 'Encrypted checkout will be enabled in the next release. Orders today are held as pending payment.' },
+    ],
+    testimonials: [
+      {
+        quote: 'The Mulank calibration felt considered. I wear it every day and it still feels made for me — not picked from a tray.',
+        name: 'Ananya M.',
+        place: 'Mumbai',
+        piece: 'Customization · Love',
+        media: '/catalog/products/heart-line-rose-bracelet.jpg',
+      },
+      {
+        quote: 'I asked for abundance and they did not oversell it. Citrine and pyrite sit quietly on the wrist. That is what I wanted.',
+        name: 'Rohan S.',
+        place: 'Bengaluru',
+        piece: 'Customization · Money',
+        media: '/catalog/products/life-path-8-numerology-strand.jpg',
+      },
+      {
+        quote: 'The atelier tone is rare. Packaging, engraving, the note — all of it felt like a house, not a catalogue.',
+        name: 'Meera K.',
+        place: 'Delhi',
+        piece: 'Rudraksha house',
+        media: '/catalog/products/five-mukhi-rudraksha-bracelet.jpg',
+      },
     ],
   });
 

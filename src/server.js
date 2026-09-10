@@ -23,6 +23,7 @@ const app = express();
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 const DEFAULT_ORIGINS = [
   'http://localhost:5173',
+  'http://localhost:5174',
   'http://localhost:4173',
   'https://beads-front-end.vercel.app',
 ];
@@ -39,6 +40,7 @@ function originAllowed(origin) {
   if (allowedOrigins.includes(origin)) return true;
   try {
     const { hostname } = new URL(origin);
+    if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
     return hostname === 'beads-front-end.vercel.app' || hostname.endsWith('.beads-front-end.vercel.app');
   } catch {
     return false;

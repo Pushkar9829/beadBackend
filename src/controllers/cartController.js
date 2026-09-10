@@ -13,16 +13,6 @@ async function getOrCreateCart(userId) {
   return cart;
 }
 
-function normalizeEngraving(name) {
-  const n = String(name || '').trim().replace(/\s+/g, ' ');
-  if (n.length < 2 || n.length > 32) {
-    const err = new Error('Enter a name between 2 and 32 characters for the charm.');
-    err.status = 400;
-    throw err;
-  }
-  return n;
-}
-
 async function buildCustomSnapshot(payload) {
   const config = await BraceletConfig.findOne().lean();
   const charm = await Charm.findById(payload.charmId).lean();
@@ -32,7 +22,8 @@ async function buildCustomSnapshot(payload) {
     throw err;
   }
   const finish = charm.finishes.find((f) => f.key === payload.finishKey) || charm.finishes[0];
-  const engravingName = normalizeEngraving(payload.engravingName || payload.snapshot?.engravingName);
+  const pieceName = `${payload.intention?.name || 'Custom bracelet'} · ${charm.name}`;
+  const wristSize = payload.wristSize || payload.snapshot?.wristSize || config.defaultWristSize;
 
   if (payload.dateOfBirth && (payload.intentionId || payload.intention?.id)) {
     const calibrated = await calibrate({
@@ -50,7 +41,7 @@ async function buildCustomSnapshot(payload) {
     }
     return {
       kind: 'custom_bracelet',
-      name: `${engravingName} · ${payload.intention?.name || 'Custom bracelet'}`,
+      name: pieceName,
       purpose: payload.purpose,
       intention: payload.intention,
       dateOfBirth: calibrated.dateOfBirth,
@@ -60,11 +51,11 @@ async function buildCustomSnapshot(payload) {
       zodiac: calibrated.zodiac,
       layout: calibrated.layout,
       beads: calibrated.beads,
-      engravingName,
       explanation: calibrated.explanation,
-      charm: { id: charm._id, name: charm.name },
+      charm: { id: charm._id, name: charm.name, slug: charm.slug },
       finish,
-      wristSize: payload.wristSize || config.defaultWristSize,
+      threadType: payload.threadType || payload.snapshot?.threadType,
+      wristSize,
       pricing: calibrated.quote,
     };
   }
@@ -108,13 +99,14 @@ async function buildCustomSnapshot(payload) {
 
   return {
     kind: 'custom_bracelet',
+    name: pieceName,
     purpose: payload.purpose,
     intention: payload.intention,
     beads: quote.lines.map((line, i) => ({ ...beads[i], ...line })),
-    charm: { id: charm._id, name: charm.name },
+    charm: { id: charm._id, name: charm.name, slug: charm.slug },
     finish,
-    wristSize: payload.wristSize || config.defaultWristSize,
-    engravingName,
+    threadType: payload.threadType || payload.snapshot?.threadType,
+    wristSize,
     pricing: quote,
   };
 }
