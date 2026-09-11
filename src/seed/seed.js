@@ -16,6 +16,7 @@ const MulankCrystal = require('../models/MulankCrystal');
 const ZodiacBead = require('../models/ZodiacBead');
 const { slugifyName } = require('../utils/asyncHandler');
 const { seedNumerologyMappings } = require('./seedNumerology');
+const { HOME_DEFAULTS } = require('../data/homeContent');
 
 const DISCLAIMER =
   'These are traditional and spiritual associations, not medical claims. Kuberstones products are not intended to diagnose, treat, or cure any condition.';
@@ -581,46 +582,7 @@ async function run() {
 
   await SiteContent.create({
     key: 'main',
-    hero: {
-      eyebrow: 'ENERGY • ABUNDANCE • WELLNESS',
-      title: 'Heal. Align. Attract abundance.',
-      subtitle: 'Choose a purpose, then an intention. Your crystals are calibrated from your Mulank and finished with zodiac beads and a name.',
-    },
-    about: {
-      headline: 'Jewellery as a quiet ritual',
-      tagline: 'Editorial luxury for modern seekers.',
-      body: 'Kuberstones is a contemporary jewellery house working with crystals, rudraksha and gemstones. Customize Your Bracelet is the heart of the brand: you choose a purpose and intention, we place the crystals from your Mulank calibration, add zodiac beads, then engrave the name you give the piece.\n\nEvery recommendation is tied to a traditional association, written in plain language. We do not make medical claims.',
-    },
-    trustClaims: [
-      { title: 'Natural & Authentic', body: 'Stones are selected for quality and character. We describe them honestly.' },
-      { title: 'Designed for Intentions', body: 'Purpose, intention and bead are linked in our master data — never guessed at checkout.' },
-      { title: 'Handmade', body: 'Each custom strand is made to your bead count, wrist size and charm finish.' },
-      { title: 'Energized / Cleansed', body: 'Pieces are prepared in-house with our standard cleanse ritual before dispatch.' },
-      { title: 'Secure Payments', body: 'Encrypted checkout will be enabled in the next release. Orders today are held as pending payment.' },
-    ],
-    testimonials: [
-      {
-        quote: 'The Mulank calibration felt considered. I wear it every day and it still feels made for me — not picked from a tray.',
-        name: 'Ananya M.',
-        place: 'Mumbai',
-        piece: 'Customization · Love',
-        media: '/catalog/products/heart-line-rose-bracelet.jpg',
-      },
-      {
-        quote: 'I asked for abundance and they did not oversell it. Citrine and pyrite sit quietly on the wrist. That is what I wanted.',
-        name: 'Rohan S.',
-        place: 'Bengaluru',
-        piece: 'Customization · Money',
-        media: '/catalog/products/life-path-8-numerology-strand.jpg',
-      },
-      {
-        quote: 'The atelier tone is rare. Packaging, engraving, the note — all of it felt like a house, not a catalogue.',
-        name: 'Meera K.',
-        place: 'Delhi',
-        piece: 'Rudraksha house',
-        media: '/catalog/products/five-mukhi-rudraksha-bracelet.jpg',
-      },
-    ],
+    ...HOME_DEFAULTS,
   });
 
   console.log('Seed complete.');

@@ -4,6 +4,7 @@ const Bead = require('../models/Bead');
 const Order = require('../models/Order');
 const SiteContent = require('../models/SiteContent');
 const Media = require('../models/Media');
+const { mergeHomeContent } = require('../data/homeContent');
 const { asyncHandler } = require('../utils/asyncHandler');
 
 exports.dashboard = asyncHandler(async (_req, res) => {
@@ -30,13 +31,26 @@ exports.updateUser = asyncHandler(async (req, res) => {
 });
 
 exports.content = asyncHandler(async (_req, res) => {
-  const content = await SiteContent.findOne({ key: 'main' }).lean();
-  res.json({ content });
+  const stored = await SiteContent.findOne({ key: 'main' }).lean();
+  res.json({ content: mergeHomeContent(stored) });
 });
 
 exports.saveContent = asyncHandler(async (req, res) => {
-  const content = await SiteContent.findOneAndUpdate({ key: 'main' }, { key: 'main', ...req.body }, { new: true, upsert: true });
-  res.json({ content });
+  const incoming = { ...req.body };
+  delete incoming._id;
+  delete incoming.__v;
+  delete incoming.createdAt;
+  delete incoming.updatedAt;
+  const next = mergeHomeContent({ ...incoming, key: 'main' });
+  delete next._id;
+  delete next.createdAt;
+  delete next.updatedAt;
+  const content = await SiteContent.findOneAndUpdate(
+    { key: 'main' },
+    { $set: { ...next, key: 'main' } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  ).lean();
+  res.json({ content: mergeHomeContent(content) });
 });
 
 exports.listMedia = asyncHandler(async (_req, res) => {
