@@ -1,6 +1,6 @@
 const Order = require('../models/Order');
 const Cart = require('../models/Cart');
-const { asyncHandler } = require('../utils/asyncHandler');
+const { asyncHandler, escapeRegex } = require('../utils/asyncHandler');
 
 function makeOrderNumber() {
   const n = Math.floor(100000 + Math.random() * 900000);
@@ -34,6 +34,7 @@ exports.create = asyncHandler(async (req, res) => {
     payment: { gateway: null, gatewayRef: null },
     shipment: { carrier: null, waybill: null },
     notes,
+    timeline: [{ status: 'pending_payment', note: 'Placed', at: new Date() }],
   });
 
   cart.items = [];
@@ -55,21 +56,42 @@ exports.getOne = asyncHandler(async (req, res) => {
 exports.adminList = asyncHandler(async (req, res) => {
   const filter = {};
   if (req.query.status) filter.status = req.query.status;
-  const orders = await Order.find(filter).populate('userId', 'name email').sort({ createdAt: -1 }).lean();
-  res.json({ orders });
+  const q = String(req.query.q || '').trim();
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), 'i');
+    filter.$or = [
+      { orderNumber: rx },
+      { email: rx },
+      { contactName: rx },
+      { phone: rx },
+    ];
+  }
+  const [orders, statusRows] = await Promise.all([
+    Order.find(filter).populate('userId', 'name email').sort({ createdAt: -1 }).lean(),
+    Order.aggregate([{ $group: { _id: '$status', n: { $sum: 1 } } }]),
+  ]);
+  const statusCounts = { all: 0 };
+  for (const row of statusRows) {
+    statusCounts[row._id] = row.n;
+    statusCounts.all += row.n;
+  }
+  res.json({ orders, statusCounts });
 });
 
 exports.adminUpdate = asyncHandler(async (req, res) => {
-  const order = await Order.findByIdAndUpdate(
-    req.params.id,
-    {
-      status: req.body.status,
-      notes: req.body.notes,
-      'shipment.carrier': req.body.carrier,
-      'shipment.waybill': req.body.waybill,
-    },
-    { new: true }
-  );
+  const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ message: 'Order not found.' });
+  const prev = order.status;
+  if (req.body.status) order.status = req.body.status;
+  if (req.body.notes !== undefined) order.notes = req.body.notes;
+  order.shipment = order.shipment || {};
+  if (req.body.carrier !== undefined) order.shipment.carrier = req.body.carrier;
+  if (req.body.waybill !== undefined) order.shipment.waybill = req.body.waybill;
+  if (req.body.trackingUrl !== undefined) order.shipment.trackingUrl = req.body.trackingUrl;
+  if (req.body.status && req.body.status !== prev) {
+    order.timeline = order.timeline || [];
+    order.timeline.push({ status: req.body.status, note: req.body.timelineNote || '', at: new Date() });
+  }
+  await order.save();
   res.json({ order });
 });

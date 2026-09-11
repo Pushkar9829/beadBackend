@@ -7,4 +7,18 @@ function slugifyName(name) {
   return slugify(name, { lower: true, strict: true });
 }
 
-module.exports = { asyncHandler, slugifyName };
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function cleanBody(body = {}) {
+  const data = { ...body };
+  delete data._id;
+  delete data.id;
+  delete data.__v;
+  delete data.createdAt;
+  delete data.updatedAt;
+  return data;
+}
+
+module.exports = { asyncHandler, slugifyName, escapeRegex, cleanBody };

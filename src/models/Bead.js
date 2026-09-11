@@ -16,8 +16,13 @@ const beadSchema = new mongoose.Schema(
       default:
         'These are traditional and spiritual associations, not medical claims. Kuberstones products are not intended to diagnose, treat, or cure any condition.',
     },
+    origin: String,
+    sizeMm: Number,
+    shape: String,
+    grade: { type: String, enum: ['natural', 'premium', 'rare'] },
     pricePerBead: { type: Number, required: true, min: 0 },
     stock: { type: Number, default: 100 },
+    lowStockLimit: { type: Number, default: 10 },
     textureUrl: String,
     colorHex: { type: String, default: '#C6A75E' },
     isActive: { type: Boolean, default: true },

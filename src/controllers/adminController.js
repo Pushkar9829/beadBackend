@@ -1,22 +1,8 @@
 const User = require('../models/User');
-const Product = require('../models/Product');
-const Bead = require('../models/Bead');
-const Order = require('../models/Order');
 const SiteContent = require('../models/SiteContent');
 const Media = require('../models/Media');
 const { mergeHomeContent } = require('../data/homeContent');
 const { asyncHandler } = require('../utils/asyncHandler');
-
-exports.dashboard = asyncHandler(async (_req, res) => {
-  const [users, products, beads, pendingOrders, lowStock] = await Promise.all([
-    User.countDocuments(),
-    Product.countDocuments(),
-    Bead.countDocuments(),
-    Order.countDocuments({ status: 'pending_payment' }),
-    Product.countDocuments({ stock: { $lte: 5 } }),
-  ]);
-  res.json({ users, products, beads, pendingOrders, lowStock });
-});
 
 exports.users = asyncHandler(async (_req, res) => {
   const users = await User.find().select('-passwordHash').sort({ createdAt: -1 }).lean();
@@ -69,4 +55,17 @@ exports.uploadMedia = asyncHandler(async (req, res) => {
     size: req.file.size,
   });
   res.status(201).json({ media });
+});
+
+exports.deleteMedia = asyncHandler(async (req, res) => {
+  const fs = require('fs');
+  const path = require('path');
+  const media = await Media.findById(req.params.id);
+  if (!media) return res.status(404).json({ message: 'File not found.' });
+  if (media.filename) {
+    const filePath = path.join(__dirname, '../../uploads', media.filename);
+    fs.unlink(filePath, () => {});
+  }
+  await media.deleteOne();
+  res.json({ ok: true });
 });

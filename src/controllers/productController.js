@@ -1,6 +1,6 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
-const { asyncHandler, slugifyName } = require('../utils/asyncHandler');
+const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
 
 exports.listPublic = asyncHandler(async (req, res) => {
   const filter = { isActive: true };
@@ -26,20 +26,30 @@ exports.getBySlug = asyncHandler(async (req, res) => {
   res.json({ product });
 });
 
+function makeSku(name) {
+  const base = slugifyName(name || 'item').replace(/-/g, '').slice(0, 8).toUpperCase() || 'ITEM';
+  return `KS-${base}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+}
+
 exports.adminList = asyncHandler(async (_req, res) => {
-  const products = await Product.find().populate('categoryId', 'name slug').sort({ createdAt: -1 }).lean();
+  const products = await Product.find()
+    .populate('categoryId', 'name slug')
+    .populate('collectionIds', 'name slug')
+    .sort({ createdAt: -1 })
+    .lean();
   res.json({ products });
 });
 
 exports.adminCreate = asyncHandler(async (req, res) => {
-  const data = { ...req.body };
+  const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
+  if (!data.sku) data.sku = makeSku(data.name);
   const product = await Product.create(data);
   res.status(201).json({ product });
 });
 
 exports.adminUpdate = asyncHandler(async (req, res) => {
-  const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  const product = await Product.findByIdAndUpdate(req.params.id, cleanBody(req.body), { new: true });
   if (!product) return res.status(404).json({ message: 'Product not found.' });
   res.json({ product });
 });

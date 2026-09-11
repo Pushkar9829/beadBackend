@@ -10,7 +10,7 @@ const ZodiacBead = require('../models/ZodiacBead');
 const { getRecommendedBeads } = require('../services/recommendationService');
 const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
-const { asyncHandler, slugifyName } = require('../utils/asyncHandler');
+const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
 
 exports.purposes = asyncHandler(async (_req, res) => {
   const purposes = await Purpose.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
@@ -129,7 +129,7 @@ exports.adminPurposes = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSavePurpose = asyncHandler(async (req, res) => {
-  const data = { ...req.body };
+  const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   const purpose = req.params.id
     ? await Purpose.findByIdAndUpdate(req.params.id, data, { new: true })
@@ -149,7 +149,7 @@ exports.adminIntentions = asyncHandler(async (req, res) => {
 });
 
 exports.adminSaveIntention = asyncHandler(async (req, res) => {
-  const data = { ...req.body };
+  const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   const intention = req.params.id
     ? await Intention.findByIdAndUpdate(req.params.id, data, { new: true })
@@ -169,11 +169,12 @@ exports.adminBeads = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSaveBead = asyncHandler(async (req, res) => {
-  const data = { ...req.body };
+  const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   if (typeof data.benefits === 'string') {
     data.benefits = data.benefits.split('\n').map((s) => s.trim()).filter(Boolean);
   }
+  if (data.grade === '') delete data.grade;
   const bead = req.params.id
     ? await Bead.findByIdAndUpdate(req.params.id, data, { new: true })
     : await Bead.create(data);
@@ -197,9 +198,10 @@ exports.adminMappings = asyncHandler(async (req, res) => {
 });
 
 exports.adminSaveMapping = asyncHandler(async (req, res) => {
+  const data = cleanBody(req.body);
   const mapping = req.params.id
-    ? await IntentionBead.findByIdAndUpdate(req.params.id, req.body, { new: true })
-    : await IntentionBead.create(req.body);
+    ? await IntentionBead.findByIdAndUpdate(req.params.id, data, { new: true })
+    : await IntentionBead.create(data);
   res.json({ mapping });
 });
 
@@ -214,11 +216,12 @@ exports.adminMulank = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSaveMulank = asyncHandler(async (req, res) => {
+  const data = cleanBody(req.body);
   const mapping = req.params.id
-    ? await MulankCrystal.findByIdAndUpdate(req.params.id, req.body, { new: true })
+    ? await MulankCrystal.findByIdAndUpdate(req.params.id, data, { new: true })
     : await MulankCrystal.findOneAndUpdate(
-        { number: req.body.number },
-        req.body,
+        { number: data.number },
+        data,
         { new: true, upsert: true, setDefaultsOnInsert: true }
       );
   res.json({ mapping });
@@ -235,7 +238,7 @@ exports.adminZodiac = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSaveZodiac = asyncHandler(async (req, res) => {
-  const data = { ...req.body };
+  const data = cleanBody(req.body);
   if (!data.slug && data.sign) data.slug = slugifyName(data.sign);
   const mapping = req.params.id
     ? await ZodiacBead.findByIdAndUpdate(req.params.id, data, { new: true })
@@ -260,17 +263,19 @@ exports.adminCharms = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSaveCharm = asyncHandler(async (req, res) => {
+  const data = cleanBody(req.body);
   const charm = req.params.id
-    ? await Charm.findByIdAndUpdate(req.params.id, req.body, { new: true })
-    : await Charm.create(req.body);
+    ? await Charm.findByIdAndUpdate(req.params.id, data, { new: true })
+    : await Charm.create(data);
   res.json({ charm });
 });
 
 exports.adminSaveConfig = asyncHandler(async (req, res) => {
+  const data = cleanBody(req.body);
   let config = await BraceletConfig.findOne();
-  if (!config) config = await BraceletConfig.create(req.body);
+  if (!config) config = await BraceletConfig.create(data);
   else {
-    Object.assign(config, req.body);
+    Object.assign(config, data);
     await config.save();
   }
   res.json({ config });

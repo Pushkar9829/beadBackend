@@ -1,5 +1,5 @@
 const Category = require('../models/Category');
-const { asyncHandler, slugifyName } = require('../utils/asyncHandler');
+const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
 
 function nestTree(categories) {
   const byId = Object.fromEntries(categories.map((c) => [String(c._id), { ...c, children: [] }]));
@@ -57,7 +57,7 @@ exports.adminCreate = asyncHandler(async (req, res) => {
 });
 
 exports.adminUpdate = asyncHandler(async (req, res) => {
-  const category = await Category.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  const category = await Category.findByIdAndUpdate(req.params.id, cleanBody(req.body), { new: true });
   if (!category) return res.status(404).json({ message: 'Category not found.' });
   res.json({ category });
 });

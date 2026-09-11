@@ -14,12 +14,13 @@ const orderSchema = new mongoose.Schema(
     shippingAddress: { type: mongoose.Schema.Types.Mixed, required: true },
     status: {
       type: String,
-      enum: ['pending_payment', 'paid', 'packed', 'shipped', 'cancelled'],
+      enum: ['pending_payment', 'paid', 'processing', 'packed', 'shipped', 'delivered', 'cancelled', 'returned'],
       default: 'pending_payment',
     },
     payment: {
       gateway: { type: String, default: null },
       gatewayRef: { type: String, default: null },
+      status: { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
       capturedAt: Date,
     },
     shipment: {
@@ -28,6 +29,13 @@ const orderSchema = new mongoose.Schema(
       trackingUrl: { type: String, default: null },
     },
     notes: String,
+    timeline: [
+      {
+        status: String,
+        note: String,
+        at: { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true }
 );
