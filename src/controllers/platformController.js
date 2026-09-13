@@ -551,6 +551,12 @@ exports.checkPin = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+exports.reverseGeo = asyncHandler(async (req, res) => {
+  const geo = require('../services/geoService');
+  const address = await geo.reverse(req.query.lat, req.query.lng);
+  res.json({ address });
+});
+
 exports.checkoutQuote = asyncHandler(async (req, res) => {
   const Cart = require('../models/Cart');
   const cart = await Cart.findOne({ userId: req.user._id });

@@ -11,6 +11,9 @@ const addressSchema = new mongoose.Schema(
     country: { type: String, default: 'India' },
     phone: String,
     isDefault: { type: Boolean, default: false },
+    lat: Number,
+    lng: Number,
+    source: { type: String, enum: ['manual', 'gps'], default: 'manual' },
   },
   { _id: true }
 );

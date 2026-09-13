@@ -14,6 +14,7 @@ router.get('/blog', platform.publicBlog);
 router.get('/blog/:slug', platform.publicBlogOne);
 router.get('/home/collections', platform.homeCollections);
 router.get('/pincode/:pincode', platform.checkPin);
+router.get('/geo/reverse', platform.reverseGeo);
 router.post('/newsletter', platform.subscribe);
 router.post('/contact', platform.contact);
 
