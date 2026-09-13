@@ -10,8 +10,12 @@ exports.users = asyncHandler(async (_req, res) => {
 });
 
 exports.updateUser = asyncHandler(async (req, res) => {
-  const { role, name, phone } = req.body;
-  const user = await User.findByIdAndUpdate(req.params.id, { role, name, phone }, { new: true }).select('-passwordHash');
+  const { role, name, phone, permissions } = req.body;
+  const user = await User.findByIdAndUpdate(
+    req.params.id,
+    { role, name, phone, permissions },
+    { new: true }
+  ).select('-passwordHash');
   if (!user) return res.status(404).json({ message: 'User not found.' });
   res.json({ user });
 });
@@ -39,9 +43,21 @@ exports.saveContent = asyncHandler(async (req, res) => {
   res.json({ content: mergeHomeContent(content) });
 });
 
-exports.listMedia = asyncHandler(async (_req, res) => {
-  const media = await Media.find().sort({ createdAt: -1 }).lean();
-  res.json({ media });
+exports.listMedia = asyncHandler(async (req, res) => {
+  const { parsePage, pageMeta } = require('../utils/pagination');
+  const { escapeRegex } = require('../utils/asyncHandler');
+  const { page, limit, skip } = parsePage(req, 40);
+  const filter = {};
+  if (req.query.folder && req.query.folder !== 'all') filter.folder = req.query.folder;
+  if (req.query.q) {
+    const rx = new RegExp(escapeRegex(req.query.q), 'i');
+    filter.$or = [{ originalName: rx }, { tags: rx }, { filename: rx }];
+  }
+  const [media, total] = await Promise.all([
+    Media.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    Media.countDocuments(filter),
+  ]);
+  res.json({ media, pagination: pageMeta(total, page, limit) });
 });
 
 exports.uploadMedia = asyncHandler(async (req, res) => {
@@ -53,8 +69,48 @@ exports.uploadMedia = asyncHandler(async (req, res) => {
     url,
     mimeType: req.file.mimetype,
     size: req.file.size,
+    folder: req.body.folder || 'other',
+    tags: req.body.tags ? String(req.body.tags).split(',').map((s) => s.trim()).filter(Boolean) : [],
   });
   res.status(201).json({ media });
+});
+
+exports.replaceMedia = asyncHandler(async (req, res) => {
+  const fs = require('fs');
+  const path = require('path');
+  const media = await Media.findById(req.params.id);
+  if (!media) return res.status(404).json({ message: 'File not found.' });
+  if (!req.file) return res.status(400).json({ message: 'No file uploaded.' });
+  if (media.filename) {
+    fs.unlink(path.join(__dirname, '../../uploads', media.filename), () => {});
+  }
+  media.filename = req.file.filename;
+  media.originalName = req.file.originalname;
+  media.url = `/uploads/${req.file.filename}`;
+  media.mimeType = req.file.mimetype;
+  media.size = req.file.size;
+  if (req.body.folder) media.folder = req.body.folder;
+  if (req.body.tags) media.tags = String(req.body.tags).split(',').map((s) => s.trim()).filter(Boolean);
+  await media.save();
+  res.json({ media });
+});
+
+exports.updateMedia = asyncHandler(async (req, res) => {
+  const media = await Media.findByIdAndUpdate(
+    req.params.id,
+    {
+      folder: req.body.folder,
+      tags: Array.isArray(req.body.tags)
+        ? req.body.tags
+        : String(req.body.tags || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+    },
+    { new: true }
+  );
+  if (!media) return res.status(404).json({ message: 'File not found.' });
+  res.json({ media });
 });
 
 exports.deleteMedia = asyncHandler(async (req, res) => {

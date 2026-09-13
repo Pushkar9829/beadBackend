@@ -16,6 +16,8 @@ const cartSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', unique: true, sparse: true },
     items: [cartItemSchema],
+    couponCode: { type: String, default: '' },
+    remindedAt: Date,
   },
   { timestamps: true }
 );

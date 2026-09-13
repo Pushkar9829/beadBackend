@@ -20,9 +20,11 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
-    role: { type: String, enum: ['customer', 'admin'], default: 'customer' },
+    role: { type: String, enum: ['customer', 'admin', 'manager', 'staff'], default: 'customer' },
+    permissions: { type: [String], default: [] },
     phone: String,
     addresses: [addressSchema],
+    groupIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CustomerGroup' }],
   },
   { timestamps: true }
 );
@@ -33,8 +35,10 @@ userSchema.methods.toPublic = function toPublic() {
     name: this.name,
     email: this.email,
     role: this.role,
+    permissions: this.permissions || [],
     phone: this.phone,
     addresses: this.addresses,
+    groupIds: this.groupIds,
     createdAt: this.createdAt,
   };
 };

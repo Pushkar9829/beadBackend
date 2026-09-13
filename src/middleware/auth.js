@@ -58,11 +58,25 @@ async function requireAuth(req, res, next) {
   }
 }
 
+const STAFF_ROLES = ['admin', 'manager', 'staff'];
+
 function requireAdmin(req, res, next) {
-  if (!req.user || req.user.role !== 'admin') {
+  if (!req.user || !STAFF_ROLES.includes(req.user.role)) {
     return res.status(403).json({ message: 'Admin access required.' });
   }
   next();
+}
+
+function requirePermission(permission) {
+  return (req, res, next) => {
+    if (!req.user || !STAFF_ROLES.includes(req.user.role)) {
+      return res.status(403).json({ message: 'Admin access required.' });
+    }
+    if (req.user.role === 'admin') return next();
+    const perms = req.user.permissions || [];
+    if (perms.includes(permission) || perms.includes('all')) return next();
+    return res.status(403).json({ message: 'You do not have permission for this action.' });
+  };
 }
 
 module.exports = {
@@ -72,4 +86,6 @@ module.exports = {
   optionalAuth,
   requireAuth,
   requireAdmin,
+  requirePermission,
+  STAFF_ROLES,
 };

@@ -17,6 +17,10 @@ const customizerRoutes = require('./routes/customizerRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const storeRoutes = require('./routes/storeRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
+const shippingRoutes = require('./routes/shippingRoutes');
+const webhookController = require('./controllers/webhookController');
 
 const app = express();
 
@@ -57,19 +61,35 @@ app.use(
   })
 );
 app.use(morgan('dev'));
-app.use(express.json({ limit: '2mb' }));
+function captureWebhookBody(req, _res, buf) {
+  const url = req.originalUrl || req.url || '';
+  if (url.includes('/payments/cashfree/webhook') || url.includes('/shipping/ithink/webhook')) {
+    req.rawBody = buf.toString('utf8');
+  }
+}
+app.use(express.urlencoded({ extended: true, limit: '2mb', verify: captureWebhookBody }));
+app.use(
+  express.json({
+    limit: '2mb',
+    verify: captureWebhookBody,
+  })
+);
 app.use(cookieParser());
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.use(optionalAuth);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, brand: 'Kuberstones' }));
+app.get('/api/webhooks', webhookController.list);
 app.get('/api/content', contentController.get);
+app.use('/api', storeRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/customizer', customizerRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/shipping', shippingRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.use(notFound);

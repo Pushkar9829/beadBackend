@@ -11,5 +11,7 @@ router.patch('/items/:itemId', ctrl.updateItem);
 router.delete('/items/:itemId', ctrl.removeItem);
 router.delete('/', ctrl.clearCart);
 router.post('/merge', ctrl.mergeCart);
+router.post('/coupon', ctrl.applyCoupon);
+router.delete('/coupon', ctrl.removeCoupon);
 
 module.exports = router;

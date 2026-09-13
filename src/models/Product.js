@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const seoFields = require('./seoFields');
 
 const productSchema = new mongoose.Schema(
   {
@@ -16,9 +17,11 @@ const productSchema = new mongoose.Schema(
     stock: { type: Number, default: 0 },
     lowStockLimit: { type: Number, default: 5 },
     featured: { type: Boolean, default: false },
+    featuredSort: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
     colorHex: { type: String, default: '#6B3FA0' },
     attributes: { type: Map, of: String },
+    seo: seoFields,
   },
   { timestamps: true }
 );

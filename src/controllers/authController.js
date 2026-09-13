@@ -18,6 +18,17 @@ exports.register = asyncHandler(async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await User.create({ name, email, passwordHash, phone });
   await Cart.create({ userId: user._id, items: [] });
+  try {
+    const { notify } = require('../services/notificationService');
+    await notify({
+      type: 'new_customer',
+      title: `New customer ${user.name}`,
+      body: user.email,
+      link: '/admin/customers',
+    });
+  } catch {
+    /* non-blocking */
+  }
   const token = signToken(user);
   setAuthCookie(res, token);
   res.status(201).json({ user: user.toPublic(), token });

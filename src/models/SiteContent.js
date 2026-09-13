@@ -122,6 +122,7 @@ const siteContentSchema = new mongoose.Schema(
     pages: { type: mongoose.Schema.Types.Mixed, default: {} },
     footer: { type: mongoose.Schema.Types.Mixed, default: {} },
     contact: { type: mongoose.Schema.Types.Mixed, default: {} },
+    homeLayout: { type: [mongoose.Schema.Types.Mixed], default: [] },
   },
   { timestamps: true }
 );

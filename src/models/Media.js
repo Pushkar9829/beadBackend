@@ -7,6 +7,12 @@ const mediaSchema = new mongoose.Schema(
     url: String,
     mimeType: String,
     size: Number,
+    folder: {
+      type: String,
+      enum: ['all', 'product', 'category', 'banner', 'blog', 'other'],
+      default: 'other',
+    },
+    tags: [String],
   },
   { timestamps: true }
 );

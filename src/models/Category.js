@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const seoFields = require('./seoFields');
 
 const categorySchema = new mongoose.Schema(
   {
@@ -10,6 +11,7 @@ const categorySchema = new mongoose.Schema(
     description: String,
     sortOrder: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
+    seo: seoFields,
   },
   { timestamps: true }
 );

@@ -6,6 +6,8 @@ const BraceletConfig = require('../models/BraceletConfig');
 const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
 const { asyncHandler } = require('../utils/asyncHandler');
+const { quote: quoteCart } = require('../services/checkoutService');
+const { findUsableCoupon, validateCoupon } = require('../services/couponService');
 
 async function getOrCreateCart(userId) {
   let cart = await Cart.findOne({ userId });
@@ -111,9 +113,20 @@ async function buildCustomSnapshot(payload) {
   };
 }
 
+async function withQuote(cart, user, pincode) {
+  const priced = await quoteCart({
+    items: cart.items.map((i) => (i.toObject ? i.toObject() : i)),
+    couponCode: cart.couponCode,
+    user,
+    pincode,
+  });
+  return { cart, quote: priced };
+}
+
 exports.getCart = asyncHandler(async (req, res) => {
   const cart = await getOrCreateCart(req.user._id);
-  res.json({ cart });
+  const payload = await withQuote(cart, req.user, req.query.pincode);
+  res.json(payload);
 });
 
 exports.addItem = asyncHandler(async (req, res) => {
@@ -158,7 +171,7 @@ exports.addItem = asyncHandler(async (req, res) => {
   }
 
   await cart.save();
-  res.json({ cart });
+  res.json(await withQuote(cart, req.user));
 });
 
 exports.updateItem = asyncHandler(async (req, res) => {
@@ -170,21 +183,42 @@ exports.updateItem = asyncHandler(async (req, res) => {
     item.lineTotal = item.quantity * item.unitPrice;
   }
   await cart.save();
-  res.json({ cart });
+  res.json(await withQuote(cart, req.user));
 });
 
 exports.removeItem = asyncHandler(async (req, res) => {
   const cart = await getOrCreateCart(req.user._id);
   cart.items = cart.items.filter((i) => String(i._id) !== req.params.itemId);
   await cart.save();
-  res.json({ cart });
+  res.json(await withQuote(cart, req.user));
 });
 
 exports.clearCart = asyncHandler(async (req, res) => {
   const cart = await getOrCreateCart(req.user._id);
   cart.items = [];
+  cart.couponCode = '';
   await cart.save();
-  res.json({ cart });
+  res.json(await withQuote(cart, req.user));
+});
+
+exports.applyCoupon = asyncHandler(async (req, res) => {
+  const cart = await getOrCreateCart(req.user._id);
+  const code = String(req.body.code || '').toUpperCase().trim();
+  if (!code) return res.status(400).json({ message: 'Enter a coupon code.' });
+  const coupon = await findUsableCoupon(code);
+  const subtotal = cart.items.reduce((s, i) => s + (i.lineTotal || 0), 0);
+  const check = await validateCoupon({ coupon, user: req.user, items: cart.items, subtotal });
+  if (!check.ok) return res.status(400).json({ message: check.message });
+  cart.couponCode = code;
+  await cart.save();
+  res.json(await withQuote(cart, req.user));
+});
+
+exports.removeCoupon = asyncHandler(async (req, res) => {
+  const cart = await getOrCreateCart(req.user._id);
+  cart.couponCode = '';
+  await cart.save();
+  res.json(await withQuote(cart, req.user));
 });
 
 exports.mergeCart = asyncHandler(async (req, res) => {
@@ -235,7 +269,7 @@ exports.mergeCart = asyncHandler(async (req, res) => {
   }
 
   await cart.save();
-  res.json({ cart });
+  res.json(await withQuote(cart, req.user));
 });
 
 exports.buildCustomSnapshot = buildCustomSnapshot;

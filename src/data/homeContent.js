@@ -1,4 +1,5 @@
 const { PAGES_DEFAULTS, FOOTER_DEFAULTS, CONTACT_DEFAULTS } = require('./sitePages');
+const { mergeHomeLayout } = require('./homeLayout');
 
 const ICON_FROM_TITLE = {
   'Natural & Authentic': 'gem',
@@ -180,6 +181,7 @@ function withClaimIcons(claims) {
 function mergeHomeContent(stored) {
   const merged = mergeValue(HOME_DEFAULTS, stored && typeof stored === 'object' ? stored : {});
   merged.trustClaims = withClaimIcons(merged.trustClaims);
+  merged.homeLayout = mergeHomeLayout(stored?.homeLayout);
   if (stored?._id) merged._id = stored._id;
   if (stored?.key) merged.key = stored.key;
   if (stored?.createdAt) merged.createdAt = stored.createdAt;
