@@ -11,6 +11,8 @@ const { getRecommendedBeads } = require('../services/recommendationService');
 const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
 const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
+const { MODES } = require('../data/studioLayers');
+const studioLayers = require('../services/studioLayerService');
 
 exports.purposes = asyncHandler(async (_req, res) => {
   const purposes = await Purpose.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
@@ -81,6 +83,47 @@ exports.beads = asyncHandler(async (_req, res) => {
     .sort({ name: 1 })
     .lean();
   res.json({ beads });
+});
+
+exports.studioModes = asyncHandler(async (_req, res) => {
+  res.json({ modes: Object.values(MODES) });
+});
+
+exports.studioLayerList = asyncHandler(async (req, res) => {
+  const kind = String(req.params.kind || '');
+  if (kind === 'purpose') {
+    const purposes = await Purpose.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
+    return res.json({ kind, items: purposes });
+  }
+  const data = await studioLayers.listLayers(kind);
+  if (!data) return res.status(404).json({ message: 'That customisation path was not found.' });
+  res.json(data);
+});
+
+exports.studioLayerItem = asyncHandler(async (req, res) => {
+  const kind = String(req.params.kind || '');
+  const slug = String(req.params.slug || '');
+  if (kind === 'numerology' && (req.query.dateOfBirth || req.query.mulank)) {
+    let mulank = Number(req.query.mulank);
+    let bhagyank = Number(req.query.bhagyank);
+    if (req.query.dateOfBirth) {
+      const nums = studioLayers.numerologyFromDate(req.query.dateOfBirth);
+      mulank = nums.mulank;
+      bhagyank = nums.bhagyank;
+    }
+    const mItem = await studioLayers.getLayerItem('numerology', String(mulank || slug));
+    const bItem = await studioLayers.getLayerItem('numerology', String(bhagyank || mulank || slug));
+    if (!mItem) return res.status(404).json({ message: 'Numerology number not found.' });
+    return res.json({
+      kind: 'numerology',
+      dateOfBirth: req.query.dateOfBirth || '',
+      mulank: mItem,
+      bhagyank: bItem,
+    });
+  }
+  const item = await studioLayers.getLayerItem(kind, slug);
+  if (!item) return res.status(404).json({ message: 'That option was not found.' });
+  res.json({ kind, item });
 });
 
 exports.calibrate = asyncHandler(async (req, res) => {

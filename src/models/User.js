@@ -13,6 +13,7 @@ const addressSchema = new mongoose.Schema(
     isDefault: { type: Boolean, default: false },
     lat: Number,
     lng: Number,
+    display: String,
     source: { type: String, enum: ['manual', 'gps'], default: 'manual' },
   },
   { _id: true }

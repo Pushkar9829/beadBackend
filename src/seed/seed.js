@@ -15,7 +15,29 @@ const Cart = require('../models/Cart');
 const MulankCrystal = require('../models/MulankCrystal');
 const ZodiacBead = require('../models/ZodiacBead');
 const { slugifyName } = require('../utils/asyncHandler');
+const StoreSettings = require('../models/StoreSettings');
+const Collection = require('../models/Collection');
+const Attribute = require('../models/Attribute');
+const Coupon = require('../models/Coupon');
+const CouponUsage = require('../models/CouponUsage');
+const Offer = require('../models/Offer');
+const FlashSale = require('../models/FlashSale');
+const Banner = require('../models/Banner');
+const Faq = require('../models/Faq');
+const BlogPost = require('../models/BlogPost');
+const Pincode = require('../models/Pincode');
+const CustomerGroup = require('../models/CustomerGroup');
+const Newsletter = require('../models/Newsletter');
+const ContactMessage = require('../models/ContactMessage');
+const Media = require('../models/Media');
+const Wishlist = require('../models/Wishlist');
+const Notification = require('../models/Notification');
+const StockAdjustment = require('../models/StockAdjustment');
+const Order = require('../models/Order');
+const ReturnRequest = require('../models/ReturnRequest');
+const WebhookEvent = require('../models/WebhookEvent');
 const { seedNumerologyMappings } = require('./seedNumerology');
+const { seedPlatform } = require('./seedPlatform');
 const { HOME_DEFAULTS } = require('../data/homeContent');
 
 const DISCLAIMER =
@@ -198,6 +220,105 @@ const BEADS = [
     colorHex: '#3A4F8C',
     image: '/catalog/beads/bead-sodalite.jpg',
   },
+  {
+    name: 'Sunstone',
+    shortDescriptor: 'Leadership light',
+    powerUse: 'Warms confidence, initiative and a generous presence.',
+    benefits: ['Lifts mood', 'Supports leadership', 'Invites optimism', 'Energises the day'],
+    chakra: 'Solar Plexus / Sacral',
+    careNotes: 'Avoid harsh chemicals. Soft cloth only.',
+    pricePerBead: 55,
+    colorHex: '#E39B4A',
+    image: '/catalog/beads/bead-citrine.jpg',
+  },
+  {
+    name: 'Red Jasper',
+    shortDescriptor: 'Steady courage',
+    powerUse: 'Grounds action and endurance in the body.',
+    benefits: ['Builds stamina', 'Steadies nerves', 'Supports courage', 'Roots scattered energy'],
+    chakra: 'Root',
+    careNotes: 'Wipe with a damp cloth. Dry thoroughly.',
+    pricePerBead: 42,
+    colorHex: '#B44A3A',
+    image: '/catalog/beads/bead-garnet.jpg',
+  },
+  {
+    name: 'Fluorite',
+    shortDescriptor: 'Order in thought',
+    powerUse: 'Clears mental clutter so study and decisions feel clean.',
+    benefits: ['Supports focus', 'Calms overthinking', 'Aids learning', 'Sorts priorities'],
+    chakra: 'Third Eye',
+    careNotes: 'Keep away from prolonged sunlight.',
+    pricePerBead: 50,
+    colorHex: '#7B8FD4',
+    image: '/catalog/beads/bead-sodalite.jpg',
+  },
+  {
+    name: 'Lepidolite',
+    shortDescriptor: 'Gentle nervous-system stone',
+    powerUse: 'Softens intensity and invites emotional evenness.',
+    benefits: ['Soothes anxiety', 'Supports rest', 'Balances mood', 'Eases transition'],
+    chakra: 'Heart / Crown',
+    careNotes: 'Handle gently. Avoid water soaks.',
+    pricePerBead: 52,
+    colorHex: '#A88BB8',
+    image: '/catalog/beads/bead-amethyst.jpg',
+  },
+  {
+    name: 'Obsidian',
+    shortDescriptor: 'Clear shield',
+    powerUse: 'Cuts psychic noise and holds a firm personal boundary.',
+    benefits: ['Protects the field', 'Grounds quickly', 'Releases heaviness', 'Clarifies truth'],
+    chakra: 'Root',
+    careNotes: 'Wipe clean. Keep separate from softer stones in storage.',
+    pricePerBead: 40,
+    colorHex: '#1A1A1A',
+    image: '/catalog/beads/bead-black-tourmaline.jpg',
+  },
+  {
+    name: 'Hematite',
+    shortDescriptor: 'Iron calm',
+    powerUse: 'Pulls awareness into the body and steadies will.',
+    benefits: ['Grounds energy', 'Supports focus', 'Strengthens resolve', 'Balances drive'],
+    chakra: 'Root',
+    careNotes: 'Keep dry. Wipe with a soft cloth.',
+    pricePerBead: 45,
+    colorHex: '#6B6F76',
+    image: '/catalog/beads/bead-black-tourmaline.jpg',
+  },
+  {
+    name: 'Smoky Quartz',
+    shortDescriptor: 'Quiet gravity',
+    powerUse: 'Transmutes heaviness and keeps the field practical.',
+    benefits: ['Grounds stress', 'Clears residue', 'Supports discipline', 'Softens overwhelm'],
+    chakra: 'Root',
+    careNotes: 'Rinse in lukewarm water. Dry thoroughly.',
+    pricePerBead: 48,
+    colorHex: '#6B5344',
+    image: '/catalog/beads/bead-black-tourmaline.jpg',
+  },
+  {
+    name: 'Shungite',
+    shortDescriptor: 'Deep filter',
+    powerUse: 'Traditional stone of purification and electromagnetic quiet.',
+    benefits: ['Grounds the field', 'Supports cleansing rituals', 'Steadies mood', 'Holds a boundary'],
+    chakra: 'Root',
+    careNotes: 'Wipe dry. Do not soak for long periods.',
+    pricePerBead: 58,
+    colorHex: '#111111',
+    image: '/catalog/beads/bead-black-tourmaline.jpg',
+  },
+  {
+    name: 'Blue Lace Agate',
+    shortDescriptor: 'Soft speech',
+    powerUse: 'Eases the throat so words come without strain.',
+    benefits: ['Calms communication', 'Soothes tension', 'Supports kindness in speech', 'Cools heat'],
+    chakra: 'Throat',
+    careNotes: 'Avoid harsh cleaners. Soft cloth only.',
+    pricePerBead: 50,
+    colorHex: '#8BB8D4',
+    image: '/catalog/beads/bead-sodalite.jpg',
+  },
 ];
 
 const PURPOSES = [
@@ -269,7 +390,7 @@ function beadNamesForIntention(intentionName, purposeName) {
     return ['Amethyst', 'Labradorite', 'Moonstone', 'Clear Quartz'];
   }
   if (/communicat|speak|voice|express/i.test(intentionName) || purposeName === 'Communication & Expression') {
-    return ['Lapis Lazuli', 'Sodalite', 'Blue Lace placeholder', 'Clear Quartz'].filter((n) => n !== 'Blue Lace placeholder');
+    return ['Lapis Lazuli', 'Sodalite', 'Blue Lace Agate', 'Clear Quartz'];
   }
   if (/begin|slate|threshold|new/i.test(intentionName) || purposeName === 'New Beginnings') {
     return ['Moonstone', 'Clear Quartz', 'Citrine', 'Labradorite'];
@@ -302,6 +423,27 @@ async function run() {
     Cart.deleteMany({}),
     MulankCrystal.deleteMany({}),
     ZodiacBead.deleteMany({}),
+    StoreSettings.deleteMany({}),
+    Collection.deleteMany({}),
+    Attribute.deleteMany({}),
+    Coupon.deleteMany({}),
+    CouponUsage.deleteMany({}),
+    Offer.deleteMany({}),
+    FlashSale.deleteMany({}),
+    Banner.deleteMany({}),
+    Faq.deleteMany({}),
+    BlogPost.deleteMany({}),
+    Pincode.deleteMany({}),
+    CustomerGroup.deleteMany({}),
+    Newsletter.deleteMany({}),
+    ContactMessage.deleteMany({}),
+    Media.deleteMany({}),
+    Wishlist.deleteMany({}),
+    Notification.deleteMany({}),
+    StockAdjustment.deleteMany({}),
+    Order.deleteMany({}),
+    ReturnRequest.deleteMany({}),
+    WebhookEvent.deleteMany({}),
   ]);
 
   const adminHash = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'Admin@123', 10);
@@ -416,7 +558,7 @@ async function run() {
     },
   ]);
 
-  await Product.insertMany([
+  const productDocs = await Product.insertMany([
     {
       name: 'Aries Fire Bracelet',
       slug: 'aries-fire-bracelet',
@@ -428,8 +570,13 @@ async function run() {
       compareAtPrice: 2299,
       stock: 12,
       featured: true,
+      featuredSort: 1,
+      sku: 'KS-ARIES-01',
+      rating: 4.9,
+      reviewCount: 128,
       colorHex: '#C65A32',
       images: ['/catalog/products/aries-fire-bracelet.jpg'],
+      attributes: { chakra: 'Sacral', origin: 'India' },
     },
     {
       name: 'Life Path 8 Numerology Strand',
@@ -441,8 +588,13 @@ async function run() {
       price: 2199,
       stock: 8,
       featured: true,
+      featuredSort: 2,
+      sku: 'KS-LP8-01',
+      rating: 4.8,
+      reviewCount: 86,
       colorHex: '#E2B84F',
       images: ['/catalog/products/life-path-8-numerology-strand.jpg'],
+      attributes: { chakra: 'Solar Plexus', origin: 'India' },
     },
     {
       name: 'Heart Line Rose Bracelet',
@@ -454,8 +606,13 @@ async function run() {
       price: 1699,
       stock: 20,
       featured: true,
+      featuredSort: 3,
+      sku: 'KS-HEART-01',
+      rating: 5,
+      reviewCount: 214,
       colorHex: '#E8A0B4',
       images: ['/catalog/products/heart-line-rose-bracelet.jpg'],
+      attributes: { chakra: 'Heart', origin: 'India' },
     },
     {
       name: 'Five Mukhi Rudraksha Bracelet',
@@ -467,8 +624,13 @@ async function run() {
       price: 1299,
       stock: 30,
       featured: true,
+      featuredSort: 4,
+      sku: 'KS-RUD-5M',
+      rating: 4.9,
+      reviewCount: 341,
       colorHex: '#6B3A1E',
       images: ['/catalog/products/five-mukhi-rudraksha-bracelet.jpg'],
+      attributes: { origin: 'India' },
     },
     {
       name: 'Amethyst Calm Strand',
@@ -480,8 +642,13 @@ async function run() {
       price: 2499,
       stock: 10,
       featured: true,
+      featuredSort: 5,
+      sku: 'KS-AMY-01',
+      rating: 4.7,
+      reviewCount: 92,
       colorHex: '#7B4BB3',
       images: ['/catalog/products/amethyst-calm-strand.jpg'],
+      attributes: { chakra: 'Crown', origin: 'India' },
     },
     {
       name: 'Lapis Statement Bracelet',
@@ -493,8 +660,12 @@ async function run() {
       price: 2799,
       stock: 6,
       featured: false,
+      sku: 'KS-LAPIS-01',
+      rating: 5,
+      reviewCount: 47,
       colorHex: '#2E4C9A',
       images: ['/catalog/products/lapis-statement-bracelet.jpg'],
+      attributes: { chakra: 'Throat', origin: 'India' },
     },
   ]);
 
@@ -585,7 +756,14 @@ async function run() {
     ...HOME_DEFAULTS,
   });
 
-  console.log('Seed complete.');
+  await seedPlatform({
+    admin,
+    demo,
+    products: productDocs,
+    beads: beadDocs,
+  });
+
+  console.log('Seed complete. Catalog, customizer, and store models are filled.');
   console.log(`Admin: ${admin.email} / ${process.env.ADMIN_PASSWORD || 'Admin@123'}`);
   console.log('Customer: demo@kuberstones.com / Demo@123');
   process.exit(0);

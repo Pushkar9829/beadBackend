@@ -114,17 +114,20 @@ const siteContentSchema = new mongoose.Schema(
       primaryCta: ctaSchema,
       secondaryCta: ctaSchema,
     },
-    about: {
-      headline: String,
-      body: String,
-      tagline: String,
-    },
+    about: { type: mongoose.Schema.Types.Mixed, default: {} },
+    brand: { type: mongoose.Schema.Types.Mixed, default: {} },
+    purpose: { type: mongoose.Schema.Types.Mixed, default: {} },
+    rails: { type: mongoose.Schema.Types.Mixed, default: {} },
+    faq: { type: mongoose.Schema.Types.Mixed, default: {} },
+    journal: { type: mongoose.Schema.Types.Mixed, default: {} },
+    flash: { type: mongoose.Schema.Types.Mixed, default: {} },
+    newsletter: { type: mongoose.Schema.Types.Mixed, default: {} },
     pages: { type: mongoose.Schema.Types.Mixed, default: {} },
     footer: { type: mongoose.Schema.Types.Mixed, default: {} },
     contact: { type: mongoose.Schema.Types.Mixed, default: {} },
     homeLayout: { type: [mongoose.Schema.Types.Mixed], default: [] },
   },
-  { timestamps: true }
+  { timestamps: true, strict: false }
 );
 
 module.exports = mongoose.model('SiteContent', siteContentSchema);

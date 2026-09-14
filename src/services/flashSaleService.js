@@ -9,7 +9,7 @@ function saleWindowMatch(now = new Date()) {
 }
 
 async function getActiveSales(now = new Date()) {
-  return FlashSale.find(saleWindowMatch(now)).populate('items.productId', 'name slug price images shortDescription family colorHex compareAtPrice isActive').lean();
+  return FlashSale.find(saleWindowMatch(now)).populate('items.productId', 'name slug price images shortDescription family colorHex compareAtPrice isActive rating reviewCount').lean();
 }
 
 async function getSalePriceMap(now = new Date()) {

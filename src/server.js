@@ -6,6 +6,7 @@ const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const { connectDb } = require('./config/db');
+const { ensureLayerBeads } = require('./seed/ensureLayerBeads');
 const { notFound, errorHandler } = require('./middleware/error');
 const { optionalAuth } = require('./middleware/auth');
 const contentController = require('./controllers/contentController');
@@ -98,7 +99,13 @@ app.use(errorHandler);
 const port = process.env.PORT || 5000;
 
 connectDb()
-  .then(() => {
+  .then(async () => {
+    try {
+      const result = await ensureLayerBeads();
+      if (result.created.length) console.log(`Layer beads added: ${result.created.join(', ')}`);
+    } catch (err) {
+      console.warn('Layer beads:', err.message);
+    }
     app.listen(port, () => console.log(`Kuberstones API on http://localhost:${port}`));
   })
   .catch((err) => {

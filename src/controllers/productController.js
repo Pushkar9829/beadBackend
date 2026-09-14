@@ -5,6 +5,7 @@ const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler'
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
 const { productsForCollection } = require('../services/collectionService');
+const { attachProductRating } = require('../lib/productRating');
 
 function asAttributes(value) {
   if (!value) return {};
@@ -15,7 +16,7 @@ function asAttributes(value) {
 
 function withPublicFields(product, saleMap) {
   const next = applySaleToProduct(product, saleMap);
-  return { ...next, attributes: asAttributes(next.attributes) };
+  return attachProductRating({ ...next, attributes: asAttributes(next.attributes) });
 }
 
 exports.listPublic = asyncHandler(async (req, res) => {

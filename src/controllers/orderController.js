@@ -22,8 +22,17 @@ exports.create = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'Your cart is empty.' });
   }
   const { shippingAddress, notes, phone, contactName, couponCode, paymentMethod, upiRef } = req.body;
-  if (!shippingAddress?.line1 || !shippingAddress?.city || !shippingAddress?.pincode) {
-    return res.status(400).json({ message: 'A complete shipping address is required.' });
+  if (!shippingAddress?.line1 || !shippingAddress?.city || !/^\d{6}$/.test(String(shippingAddress?.pincode || '').replace(/\D/g, ''))) {
+    return res.status(400).json({ message: 'A complete shipping address with a 6-digit pincode is required.' });
+  }
+  const orderPhone = String(phone || shippingAddress.phone || req.user.phone || '').replace(/\D/g, '');
+  const mobile = orderPhone.length === 12 && orderPhone.startsWith('91')
+    ? orderPhone.slice(2)
+    : orderPhone.length === 11 && orderPhone.startsWith('0')
+      ? orderPhone.slice(1)
+      : orderPhone;
+  if (!/^[6-9]\d{9}$/.test(mobile)) {
+    return res.status(400).json({ message: 'A valid 10-digit Indian mobile number is required.' });
   }
 
   const priced = await quoteCart({
@@ -55,7 +64,7 @@ exports.create = asyncHandler(async (req, res) => {
   if (isGateway && !cfReady.enabled) {
     return res.status(400).json({ message: 'Cashfree is not configured. Add App ID and Secret in admin Settings.' });
   }
-  if (isGateway && !cashfree.indiaPhone(phone || req.user.phone)) {
+  if (isGateway && !cashfree.indiaPhone(mobile)) {
     return res.status(400).json({ message: 'Online payment needs a 10-digit Indian mobile number.' });
   }
 
@@ -67,7 +76,7 @@ exports.create = asyncHandler(async (req, res) => {
     userId: req.user._id,
     email: req.user.email,
     contactName: contactName || req.user.name,
-    phone: phone || req.user.phone,
+    phone: mobile,
     items: priced.items,
     subtotal: priced.subtotal,
     discount: priced.discount,
@@ -76,10 +85,12 @@ exports.create = asyncHandler(async (req, res) => {
     total: priced.total,
     couponCode: priced.coupon?.code,
     couponId: priced.coupon?._id,
+    offerId: priced.offer?._id,
+    offerName: priced.offer?.label || priced.offer?.name,
     shippingAddress: {
       ...shippingAddress,
       name: contactName || req.user.name || shippingAddress.name,
-      phone: phone || req.user.phone || shippingAddress.phone,
+      phone: mobile,
     },
     status,
     payment: {

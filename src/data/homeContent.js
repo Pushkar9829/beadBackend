@@ -91,6 +91,64 @@ const HOME_DEFAULTS = {
     action: 'Shop all →',
     to: '/shop',
   },
+  brand: {
+    name: 'KUBERSTONES',
+    tagline: 'Personalized With Purpose',
+    logo: '',
+    customizeLabel: 'Customization',
+    collectionsLabel: 'Collections',
+    shopAllLabel: 'Shop All',
+  },
+  purpose: {
+    eyebrow: 'Purpose',
+    title: 'Shop by purpose',
+    body: 'Begin with why you wear it. Each purpose opens the studio with that intention already chosen.',
+    action: 'All purposes →',
+    to: '/customize/purpose',
+    pageEyebrow: 'Studio',
+    pageTitle: 'Shop by purpose',
+    pageBody: 'Choose the reason first. The studio then places crystals for that intention.',
+  },
+  rails: {
+    bestsellers: { eyebrow: 'Collection', title: 'Best sellers', action: 'See all →', to: '/collection/best-sellers' },
+    newArrivals: { eyebrow: 'Collection', title: 'New arrivals', action: 'See all →', to: '/collection/new-arrivals' },
+    trending: { eyebrow: 'Collection', title: 'Trending bracelets', action: 'See all →', to: '/collection/trending' },
+  },
+  faq: {
+    eyebrow: 'FAQ',
+    title: 'Questions, answered',
+    action: 'All questions →',
+    to: '/faq',
+    pageEyebrow: 'Care',
+    pageTitle: 'Questions, answered quietly.',
+    pageBody: '',
+    emptyBody: 'No questions published yet.',
+  },
+  journal: {
+    eyebrow: 'Journal',
+    title: 'From the atelier',
+    action: 'All notes →',
+    to: '/journal',
+    pageEyebrow: 'Journal',
+    pageTitle: 'From the atelier',
+    pageBody: 'Quiet writing on stones, ritual, and making.',
+    emptyBody: 'No journal entries yet.',
+  },
+  flash: {
+    label: 'Flash sale',
+    body: 'Timed prices on a short list. When the clock ends, the atelier rate returns.',
+    action: 'Shop the sale →',
+    to: '/sale',
+    pageBody: 'Timed prices. When the clock ends, the list returns to the atelier rate.',
+    emptyTitle: 'No sale is running.',
+    emptyBody: 'When a flash sale is live, timed prices will appear here.',
+    emptyProducts: 'Products for this sale are being placed.',
+  },
+  newsletter: {
+    eyebrow: 'The list',
+    title: 'Quiet notes from the atelier.',
+    compactTitle: 'The list.',
+  },
   voices: {
     eyebrow: 'Voices',
     title: 'From those who wear it',
@@ -132,7 +190,7 @@ const HOME_DEFAULTS = {
     { icon: 'sparkles', title: 'Designed for Intentions', body: 'Purpose, intention and bead are linked in our master data — never guessed at checkout.' },
     { icon: 'hand', title: 'Handmade', body: 'Each custom strand is made to your bead count, wrist size and charm finish.' },
     { icon: 'sparkles', title: 'Energized / Cleansed', body: 'Pieces are prepared in-house with our standard cleanse ritual before dispatch.' },
-    { icon: 'shield', title: 'Secure Payments', body: 'Encrypted checkout will be enabled in the next release. Orders today are held as pending payment.' },
+    { icon: 'shield', title: 'Secure Payments', body: 'Pay online through Cashfree, UPI, or cash on delivery where the pincode allows it.' },
   ],
   finale: {
     image: '',
@@ -143,9 +201,69 @@ const HOME_DEFAULTS = {
     secondaryCta: { label: 'Shop All', to: '/shop' },
   },
   about: {
-    headline: 'Jewellery as a quiet ritual',
-    tagline: 'Editorial luxury for modern seekers.',
-    body: 'Kuberstones is a contemporary jewellery house working with crystals, rudraksha and gemstones. Customize Your Bracelet is the heart of the brand: you choose a purpose and intention, we place the crystals from your Mulank calibration, add zodiac beads, then engrave the name you give the piece.\n\nEvery recommendation is tied to a traditional association, written in plain language. We do not make medical claims.',
+    eyebrow: 'Kuberstones',
+    headline: 'Personalized Spirituality, Designed Around You',
+    tagline: 'A brand by Nexxgenn Technology',
+    intro: [
+      'Kuberstones, a brand by Nexxgenn Technology, is a modern D2C spiritual lifestyle brand offering Crystal Beads, Spiritual Bracelets, Gemstones and Rudraksha.',
+      'We believe that spirituality is personal. That is why we go beyond simply selling individual beads or stones. Our focus is to understand the person, purpose and intention behind a customer’s purchase and create a more personalized spiritual experience around it.',
+    ],
+    body: '',
+    moreTitle: 'More Than Just a Bracelet',
+    moreBody:
+      'At Kuberstones, selected spiritual bracelets can be customized according to the customer’s individual needs, preferences and intentions. Instead of offering a one-size-fits-all bracelet, we begin by understanding relevant details such as:',
+    morePoints: [
+      'Purpose or intention behind the purchase',
+      'Personal goals or concerns',
+      'Date of Birth',
+      'Zodiac Sign',
+      'Moon Sign',
+      'Other relevant preferences voluntarily shared by the customer',
+    ],
+    moreClose:
+      'Based on the information provided, our team identifies suitable crystal beads, gemstone beads and Rudraksha that may be relevant to the customer’s stated purpose and creates a customized spiritual bracelet accordingly.',
+    collectionsTitle: 'Our Collections',
+    collections: [
+      { name: 'Crystal Beads', to: '/crystals', body: 'Curated crystals and natural beads selected for their natural beauty, traditional significance and suitability for spiritual and personal practices.' },
+      { name: 'Spiritual Bracelets', to: '/customize', body: 'Personalized bracelet collections where different beads can be thoughtfully combined based on the customer’s purpose, intention and provided details.' },
+      { name: 'Gemstones', to: '/gemstones', body: 'Natural gemstones selected for customers interested in their traditional, spiritual, astrological and aesthetic significance.' },
+      { name: 'Rudraksha', to: '/rudraksha', body: 'Traditional Rudraksha products for customers who value their spiritual and devotional significance.' },
+    ],
+    differentTitle: 'What Makes Kuberstones Different?',
+    different: [
+      { title: 'Personalized, Not One-Size-Fits-All', body: 'Recommendations can be tailored using information voluntarily provided by the customer.' },
+      { title: 'Shop by Purpose & Intention', body: 'Customers can explore products around their purpose, not only by product type.' },
+      { title: 'Dynamic Bracelet Creation', body: 'Customized bracelets may combine crystal beads, gemstones and Rudraksha according to the stated purpose and our recommendation approach.' },
+      { title: 'Tradition Meets Modern D2C', body: 'Traditional spiritual products with a convenient, professional online experience.' },
+      { title: 'Transparency Over Unrealistic Promises', body: 'We do not promise guaranteed financial, medical, relationship, career or other life outcomes.' },
+    ],
+    approachTitle: 'Our Approach',
+    approachKicker: 'Understand → Recommend → Customize → Create',
+    approachBody:
+      'We first understand what the customer is looking for, then use voluntarily provided information to recommend suitable beads or stones according to our stated approach. Where customization is available, these selections are brought together to create a personalized bracelet.',
+    approachNote:
+      'Natural crystals, gemstones and Rudraksha may vary in colour, pattern, texture, shape, inclusions and markings. These natural characteristics are part of what makes each piece unique.',
+    steps: [
+      { n: '01', title: 'Understand', body: 'We begin with the person, purpose and intention behind the purchase.' },
+      { n: '02', title: 'Recommend', body: 'Voluntarily shared details guide suitable beads and stones.' },
+      { n: '03', title: 'Customize', body: 'Where available, the strand is composed around those selections.' },
+      { n: '04', title: 'Create', body: 'The bracelet is made with care, then packed and sent from the house.' },
+    ],
+    visionTitle: 'Our Vision',
+    vision:
+      'To build Kuberstones into a trusted destination for personalized spiritual products, combining Crystal Beads, Gemstones, Rudraksha and customized spiritual bracelets with a transparent, convenient and thoughtfully designed D2C experience.',
+    promiseTitle: 'Our Promise',
+    promises: [
+      'Thoughtfully selected products',
+      'Personalized recommendations where applicable',
+      'Clear and responsible product information',
+      'Carefully designed customized bracelets',
+      'Quality-conscious packaging and handling',
+      'Reliable customer support',
+      'Professional and convenient shopping experience',
+    ],
+    closeLine: 'Kuberstones. Crystals. Gemstones. Rudraksha. Personalized With Purpose.',
+    closeEntity: 'A brand by Nexxgenn Technology',
   },
   pages: PAGES_DEFAULTS,
   footer: FOOTER_DEFAULTS,
@@ -159,7 +277,7 @@ function isPlainObject(value) {
 function mergeValue(fallback, stored) {
   if (stored == null || stored === '') return fallback;
   if (Array.isArray(fallback)) {
-    return Array.isArray(stored) && stored.length ? stored : fallback;
+    return Array.isArray(stored) ? stored : fallback;
   }
   if (isPlainObject(fallback)) {
     const out = { ...fallback };

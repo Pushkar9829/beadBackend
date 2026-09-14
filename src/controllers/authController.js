@@ -70,6 +70,7 @@ function sanitizeAddresses(list = []) {
       isDefault: Boolean(raw.isDefault),
       lat: Number.isFinite(Number(raw.lat)) ? Number(raw.lat) : undefined,
       lng: Number.isFinite(Number(raw.lng)) ? Number(raw.lng) : undefined,
+      display: String(raw.display || '').trim().slice(0, 240),
       source: raw.source === 'gps' ? 'gps' : 'manual',
     }))
     .filter((row) => row.line1 && row.city && /^\d{6}$/.test(row.pincode));

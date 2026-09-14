@@ -2,6 +2,7 @@ const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
+const { attachProductRating } = require('../lib/productRating');
 
 async function getOrCreate(userId) {
   let doc = await Wishlist.findOne({ userId });
@@ -14,7 +15,7 @@ exports.get = asyncHandler(async (req, res) => {
   const ids = doc.items.map((i) => i.productId);
   const saleMap = await getSalePriceMap();
   const products = await Product.find({ _id: { $in: ids }, isActive: true }).lean();
-  const byId = Object.fromEntries(products.map((p) => [String(p._id), applySaleToProduct(p, saleMap)]));
+  const byId = Object.fromEntries(products.map((p) => [String(p._id), attachProductRating(applySaleToProduct(p, saleMap))]));
   const items = doc.items.map((i) => byId[String(i.productId)]).filter(Boolean);
   res.json({ items });
 });
@@ -29,7 +30,8 @@ exports.add = asyncHandler(async (req, res) => {
   }
   const ids = doc.items.map((i) => i.productId);
   const products = await Product.find({ _id: { $in: ids }, isActive: true }).lean();
-  res.json({ items: products });
+  const saleMap = await getSalePriceMap();
+  res.json({ items: products.map((p) => attachProductRating(applySaleToProduct(p, saleMap))) });
 });
 
 exports.remove = asyncHandler(async (req, res) => {

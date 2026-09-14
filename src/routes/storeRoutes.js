@@ -5,6 +5,8 @@ const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
+router.get('/store', platform.publicStore);
+router.get('/coupons', platform.publicCoupons);
 router.get('/collections', platform.publicCollections);
 router.get('/collections/:slug', platform.publicCollection);
 router.get('/banners', platform.publicBanners);

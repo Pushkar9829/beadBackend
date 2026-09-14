@@ -16,14 +16,16 @@ const Order = require('../models/Order');
 const User = require('../models/User');
 const Cart = require('../models/Cart');
 const Collection = require('../models/Collection');
+const StoreSettings = require('../models/StoreSettings');
 const { asyncHandler, slugifyName, cleanBody, escapeRegex } = require('../utils/asyncHandler');
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { notify, unreadCount } = require('../services/notificationService');
 const { productsForCollection, listPublicCollections, getBySlug } = require('../services/collectionService');
 const { getActiveSales, getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
+const { attachProductRating } = require('../lib/productRating');
 const { quote, checkPincode } = require('../services/checkoutService');
 const { buildReport, parseRange, toCsv } = require('../services/analyticsService');
-const { couponStatus } = require('../services/couponService');
+const { listAvailableCoupons } = require('../services/couponService');
 const { sectionLive } = require('../data/homeLayout');
 
 function crud(Model, { slugFrom } = {}) {
@@ -465,7 +467,7 @@ exports.publicCollection = asyncHandler(async (req, res) => {
   if (!collection) return res.status(404).json({ message: 'Collection not found.' });
   const saleMap = await getSalePriceMap();
   let products = await productsForCollection(collection);
-  products = products.map((p) => applySaleToProduct(p, saleMap));
+  products = products.map((p) => attachProductRating(applySaleToProduct(p, saleMap)));
   res.json({ collection, products });
 });
 
@@ -487,7 +489,7 @@ exports.publicFlash = asyncHandler(async (_req, res) => {
     .map((item) => {
       const product = item.productId;
       if (!product || typeof product !== 'object' || product.isActive === false) return null;
-      return applySaleToProduct(product, saleMap);
+      return attachProductRating(applySaleToProduct(product, saleMap));
     })
     .filter(Boolean);
   res.json({
@@ -570,6 +572,42 @@ exports.checkoutQuote = asyncHandler(async (req, res) => {
   res.json({ quote: result });
 });
 
+exports.publicCoupons = asyncHandler(async (req, res) => {
+  let items = [];
+  let subtotal = 0;
+  if (req.user?._id) {
+    const cart = await Cart.findOne({ userId: req.user._id }).lean();
+    items = cart?.items || [];
+    subtotal = items.reduce((sum, item) => sum + (item.lineTotal || 0), 0);
+  }
+  const coupons = await listAvailableCoupons({ user: req.user, items, subtotal });
+  res.json({
+    count: coupons.length,
+    usableCount: coupons.filter((c) => c.usable).length,
+    coupons,
+  });
+});
+
+exports.publicStore = asyncHandler(async (_req, res) => {
+  const settings = await StoreSettings.findOne({ key: 'store' }).lean();
+  res.json({
+    store: {
+      storeName: settings?.storeName || 'Kuberstones',
+      logo: settings?.logo || '',
+      email: settings?.email || '',
+      phone: settings?.phone || '',
+      currency: settings?.currency || 'INR',
+      seo: {
+        title: settings?.seo?.title || settings?.storeName || 'Kuberstones',
+        description: settings?.seo?.description || '',
+        keywords: settings?.seo?.keywords || '',
+        ogImage: settings?.seo?.ogImage || '',
+        noIndex: Boolean(settings?.seo?.noIndex),
+      },
+    },
+  });
+});
+
 exports.homeCollections = asyncHandler(async (_req, res) => {
   const [best, fresh, trending] = await Promise.all([
     Collection.findOne({ slug: 'best-sellers', isActive: true }).lean(),
@@ -577,7 +615,7 @@ exports.homeCollections = asyncHandler(async (_req, res) => {
     Collection.findOne({ slug: 'trending', isActive: true }).lean(),
   ]);
   const saleMap = await getSalePriceMap();
-  const decorate = (products) => products.map((p) => applySaleToProduct(p, saleMap));
+  const decorate = (products) => products.map((p) => attachProductRating(applySaleToProduct(p, saleMap)));
   const [bestsellers, newArrivals, trendingProducts] = await Promise.all([
     best ? productsForCollection(best) : productsForCollection({ ruleType: 'bestsellers', ruleConfig: { limit: 8 } }),
     fresh ? productsForCollection(fresh) : productsForCollection({ ruleType: 'new_arrivals', ruleConfig: { limit: 8, days: 30 } }),

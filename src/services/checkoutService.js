@@ -3,6 +3,7 @@ const Pincode = require('../models/Pincode');
 const Product = require('../models/Product');
 const { findUsableCoupon, validateCoupon, computeDiscount } = require('./couponService');
 const { getSalePriceMap, applySaleToProduct } = require('./flashSaleService');
+const { bestOffer } = require('./offerService');
 const { publicConfig } = require('./cashfreeService');
 const ithink = require('./ithinkService');
 
@@ -111,18 +112,37 @@ async function quote({ items, couponCode, user, pincode }) {
   if (couponCode) {
     coupon = await findUsableCoupon(couponCode);
     const check = await validateCoupon({ coupon, user, items: pricedItems, subtotal });
-    if (check.ok) discount = computeDiscount(coupon, subtotal);
+    if (check.ok) discount = computeDiscount(coupon, subtotal, pricedItems);
     else {
       coupon = null;
       couponError = check.message;
     }
   }
 
-  const afterDiscount = Math.max(0, subtotal - discount);
   const pin = await checkPincode(pincode);
   let shippingFee = Number(settings.shipping.fee || 0) + Number(pin.extraFee || 0);
   const threshold = Number(settings.shipping.freeThreshold || 0);
+  const auto = await bestOffer({ items: pricedItems, subtotal, shippingFee });
+  const moneyApplied = !coupon && auto.discount > 0;
+  if (moneyApplied) discount = auto.discount;
+  const offer = (moneyApplied || auto.freeShipping)
+    ? {
+      _id: (moneyApplied ? auto.moneyOffer : auto.shippingOffer)?._id,
+      name: (moneyApplied ? auto.moneyOffer?.name : auto.shippingOffer?.name) || auto.offer?.name,
+      label: [moneyApplied ? auto.moneyOffer?.name : null, auto.freeShipping ? auto.shippingOffer?.name : null]
+        .filter(Boolean)
+        .filter((item, index, list) => list.indexOf(item) === index)
+        .join(' + ') || auto.offer?.name,
+      shippingName: auto.freeShipping ? auto.shippingOffer?.name : '',
+      type: moneyApplied ? auto.moneyOffer?.type : 'free_shipping',
+      discount: moneyApplied ? auto.discount : 0,
+      freeShipping: Boolean(auto.freeShipping),
+    }
+    : null;
+
+  const afterDiscount = Math.max(0, subtotal - discount);
   if (threshold > 0 && afterDiscount >= threshold) shippingFee = 0;
+  if (auto.freeShipping) shippingFee = 0;
   if (!pin.serviceable) shippingFee = 0;
 
   const gst = Number(settings.tax.gstPercent || 0);
@@ -141,6 +161,7 @@ async function quote({ items, couponCode, user, pincode }) {
       ? { _id: coupon._id, code: coupon.code, type: coupon.type, value: coupon.value, discount }
       : null,
     couponError,
+    offer,
     pincode: pin,
     payment: {
       cod: Boolean(settings.payment.cod) && pin.serviceable !== false && pin.cod !== false,

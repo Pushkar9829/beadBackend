@@ -10,6 +10,9 @@ router.get('/intentions/:intentionId/beads', ctrl.recommendedBeads);
 router.get('/charms', ctrl.charms);
 router.get('/config', ctrl.config);
 router.get('/beads', ctrl.beads);
+router.get('/layers', ctrl.studioModes);
+router.get('/layers/:kind', ctrl.studioLayerList);
+router.get('/layers/:kind/:slug', ctrl.studioLayerItem);
 router.post('/calibrate', ctrl.calibrate);
 router.post('/quote', ctrl.quote);
 

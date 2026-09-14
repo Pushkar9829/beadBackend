@@ -15,6 +15,8 @@ const orderSchema = new mongoose.Schema(
     total: { type: Number, required: true },
     couponCode: String,
     couponId: { type: mongoose.Schema.Types.ObjectId, ref: 'Coupon' },
+    offerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Offer' },
+    offerName: String,
     shippingAddress: { type: mongoose.Schema.Types.Mixed, required: true },
     status: {
       type: String,

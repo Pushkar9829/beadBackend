@@ -54,13 +54,31 @@ async function validateCoupon({ coupon, user, items, subtotal }) {
   return { ok: true };
 }
 
-function computeDiscount(coupon, subtotal) {
+function eligibleSubtotal(coupon, items, subtotal) {
+  if (!coupon || !Array.isArray(items) || !items.length) return subtotal;
+  if (coupon.applyTo === 'category' && (coupon.categoryIds || []).length) {
+    const allowed = new Set((coupon.categoryIds || []).map((id) => String(id)));
+    return items
+      .filter((item) => allowed.has(String(item.snapshot?.categoryId || item.categoryId || '')))
+      .reduce((sum, item) => sum + (Number(item.lineTotal) || 0), 0);
+  }
+  if (coupon.applyTo === 'products' && (coupon.productIds || []).length) {
+    const allowed = new Set((coupon.productIds || []).map((id) => String(id)));
+    return items
+      .filter((item) => allowed.has(String(item.productId || '')))
+      .reduce((sum, item) => sum + (Number(item.lineTotal) || 0), 0);
+  }
+  return subtotal;
+}
+
+function computeDiscount(coupon, subtotal, items) {
   if (!coupon) return 0;
+  const base = eligibleSubtotal(coupon, items, subtotal);
   let discount = 0;
-  if (coupon.type === 'percent') discount = Math.round((subtotal * Number(coupon.value || 0)) / 100);
+  if (coupon.type === 'percent') discount = Math.round((base * Number(coupon.value || 0)) / 100);
   else discount = Number(coupon.value || 0);
   if (coupon.maxDiscount != null) discount = Math.min(discount, Number(coupon.maxDiscount));
-  return Math.max(0, Math.min(subtotal, Math.round(discount)));
+  return Math.max(0, Math.min(base, Math.round(discount)));
 }
 
 async function recordUsage({ coupon, user, order, discount }) {
@@ -79,10 +97,53 @@ async function recordUsage({ coupon, user, order, discount }) {
   await coupon.save();
 }
 
+function publicCouponView(coupon) {
+  return {
+    code: coupon.code,
+    type: coupon.type,
+    value: coupon.value,
+    minOrder: coupon.minOrder || 0,
+    maxDiscount: coupon.maxDiscount ?? null,
+    audience: coupon.audience || 'all',
+    endsAt: coupon.endsAt || null,
+  };
+}
+
+function offerLabel(coupon) {
+  if (coupon.type === 'percent') {
+    const cap = coupon.maxDiscount != null ? ` up to ₹${coupon.maxDiscount}` : '';
+    return `${coupon.value}% off${cap}`;
+  }
+  return `₹${Number(coupon.value || 0).toLocaleString('en-IN')} off`;
+}
+
+async function listAvailableCoupons({ user, items, subtotal } = {}) {
+  const now = new Date();
+  const all = await Coupon.find({ isActive: true }).sort({ value: -1, createdAt: -1 }).lean();
+  const listed = [];
+  const hasBag = Array.isArray(items) && items.length > 0;
+  for (const coupon of all) {
+    if (couponStatus(coupon, now) !== 'active') continue;
+    if (coupon.usageLimit != null && (coupon.usedCount || 0) >= coupon.usageLimit) continue;
+    const check = hasBag
+      ? await validateCoupon({ coupon, user, items, subtotal: subtotal || 0 })
+      : { ok: true };
+    listed.push({
+      ...publicCouponView(coupon),
+      label: offerLabel(coupon),
+      usable: check.ok,
+      reason: check.ok ? '' : check.message,
+    });
+  }
+  listed.sort((a, b) => Number(b.usable) - Number(a.usable));
+  return listed;
+}
+
 module.exports = {
   couponStatus,
   findUsableCoupon,
   validateCoupon,
   computeDiscount,
   recordUsage,
+  listAvailableCoupons,
 };

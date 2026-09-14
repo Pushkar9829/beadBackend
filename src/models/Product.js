@@ -18,6 +18,8 @@ const productSchema = new mongoose.Schema(
     lowStockLimit: { type: Number, default: 5 },
     featured: { type: Boolean, default: false },
     featuredSort: { type: Number, default: 0 },
+    rating: { type: Number, min: 0, max: 5, default: 5 },
+    reviewCount: { type: Number, min: 0 },
     isActive: { type: Boolean, default: true },
     colorHex: { type: String, default: '#6B3FA0' },
     attributes: { type: Map, of: String },
