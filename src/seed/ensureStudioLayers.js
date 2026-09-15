@@ -9,7 +9,7 @@ function toDoc(kind, item, index) {
     slug: String(item.slug),
     sortOrder: index + 1,
     isActive: true,
-    name: item.name || (item.number != null ? `Number ${item.number}` : ''),
+    name: item.name || item.theme || '',
     hindi: item.hindi || '',
     dates: item.dates || '',
     fromMonth: item.fromMonth,

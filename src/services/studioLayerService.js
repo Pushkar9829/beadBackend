@@ -61,14 +61,20 @@ async function loadBeads() {
   return Bead.find({ isActive: true }).lean();
 }
 
+function publicLayerName(item) {
+  const name = String(item?.name || '').trim();
+  if (!name || /^number\s*\d+$/i.test(name)) return item?.theme || '';
+  return name;
+}
+
 function decorateItem(kind, item, beads) {
   if (!item) return null;
   if (kind === 'numerology') {
     const shared = new Set((item.mulank || []).filter((name) => (item.bhagyank || []).includes(name)));
     return {
       slug: item.slug,
-      number: item.number,
-      name: item.name || `Number ${item.number}`,
+      number: Number(item.number ?? item.slug),
+      name: publicLayerName(item),
       theme: item.theme,
       shared: [...shared],
       mulank: attachNames(item.mulank, beads, { shared }),
@@ -109,7 +115,15 @@ async function listLayers(kind) {
 
 async function getLayerItem(kind, slug) {
   await ensureStudioLayers();
-  const fromDb = await StudioLayer.findOne({ kind, slug: String(slug) }).lean();
+  const raw = String(slug || '').trim();
+  const asNumber = Number(raw);
+  const fromDb = await StudioLayer.findOne({
+    kind,
+    $or: [
+      { slug: raw.toLowerCase() },
+      ...(kind === 'numerology' && Number.isFinite(asNumber) ? [{ number: asNumber }] : []),
+    ],
+  }).lean();
   if (fromDb) {
     if (fromDb.isActive === false) return null;
     const beads = await loadBeads();
