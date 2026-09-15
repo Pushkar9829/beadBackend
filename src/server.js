@@ -7,7 +7,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { connectDb } = require('./config/db');
 const { ensureLayerBeads } = require('./seed/ensureLayerBeads');
-const { ensureStudioLayers } = require('./seed/ensureStudioLayers');
+const { ensureAuthAccounts } = require('./seed/ensureAuthAccounts');
 const { notFound, errorHandler } = require('./middleware/error');
 const { optionalAuth } = require('./middleware/auth');
 const contentController = require('./controllers/contentController');
@@ -102,6 +102,8 @@ const port = process.env.PORT || 5000;
 connectDb()
   .then(async () => {
     try {
+      const accounts = await ensureAuthAccounts();
+      if (accounts.length) console.log(`Auth accounts added: ${accounts.join(', ')}`);
       const beads = await ensureLayerBeads();
       if (beads.created.length) console.log(`Layer beads added: ${beads.created.join(', ')}`);
       if (beads.priced?.length) console.log(`Catalog prices applied: ${beads.priced.join(', ')}`);
