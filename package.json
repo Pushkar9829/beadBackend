@@ -8,7 +8,8 @@
     "dev": "nodemon src/server.js",
     "seed": "node src/seed/seed.js",
     "seed:numerology": "node src/seed/runNumerology.js",
-    "seed:layers": "node src/seed/ensureLayerBeads.js"
+    "seed:layers": "node src/seed/ensureLayerBeads.js",
+    "seed:studio-layers": "node src/seed/ensureStudioLayers.js"
   },
   "keywords": [],
   "author": "",

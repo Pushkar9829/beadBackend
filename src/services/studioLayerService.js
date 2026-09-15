@@ -1,6 +1,8 @@
 const Bead = require('../models/Bead');
+const StudioLayer = require('../models/StudioLayer');
 const { catalogFor, MODES } = require('../data/studioLayers');
 const { bhagyankFromDate, mulankFromDate } = require('./numerologyService');
+const { ensureStudioLayers } = require('../seed/ensureStudioLayers');
 
 const ALIASES = {
   obsidian: ['obsidian', 'black obsidian', 'obsidian / black obsidian'],
@@ -40,13 +42,17 @@ function publicBead(bead) {
   };
 }
 
-function attachNames(names, beads) {
+function attachNames(names, beads, flags = {}) {
+  const shared = flags.shared || new Set();
+  const core = flags.core || null;
   return (names || []).map((name) => {
     const bead = matchBead(beads, name);
     return {
       name,
       available: Boolean(bead),
       bead: publicBead(bead),
+      shared: shared.has(name),
+      core: core ? core.has(name) : undefined,
     };
   });
 }
@@ -58,39 +64,60 @@ async function loadBeads() {
 function decorateItem(kind, item, beads) {
   if (!item) return null;
   if (kind === 'numerology') {
+    const shared = new Set((item.mulank || []).filter((name) => (item.bhagyank || []).includes(name)));
     return {
       slug: item.slug,
       number: item.number,
-      name: `Number ${item.number}`,
+      name: item.name || `Number ${item.number}`,
       theme: item.theme,
-      mulank: attachNames(item.mulank, beads),
-      bhagyank: attachNames(item.bhagyank, beads),
-      recommended: attachNames([...new Set([...(item.mulank || []), ...(item.bhagyank || [])])], beads),
-      rule: 'Customer may select any 3 or all 4 from each layer. Identical crystals are kept once in the final strand.',
+      shared: [...shared],
+      mulank: attachNames(item.mulank, beads, { shared }),
+      bhagyank: attachNames(item.bhagyank, beads, { shared }),
+      recommended: attachNames([...new Set([...(item.mulank || []), ...(item.bhagyank || [])])], beads, { shared }),
+      rule: 'Customer may select any 3 or all 4 from each layer. Identical crystals are kept once in the final strand, with both roles stored.',
     };
   }
+  const core = new Set(item.recommended || []);
   return {
     slug: item.slug,
     name: item.name,
     hindi: item.hindi,
     dates: item.dates,
     theme: item.theme,
-    suitable: attachNames(item.suitable || item.recommended, beads),
-    recommended: attachNames(item.recommended, beads),
+    suitable: attachNames(item.suitable || item.recommended, beads, { core }),
+    recommended: attachNames(item.recommended, beads, { core }),
+    rule: kind === 'zodiac'
+      ? 'Keep any 3 or all 4 recommended crystals. Suitable catalog stones may be added. Traditional symbolism, not medical claims.'
+      : 'Keep any 3 or all 4 recommended crystals, then continue to charm and review.',
   };
+}
+
+async function loadCatalog(kind) {
+  await ensureStudioLayers();
+  const rows = await StudioLayer.find({ kind }).sort({ sortOrder: 1, number: 1, name: 1 }).lean();
+  if (!rows.length) return catalogFor(kind);
+  return rows.filter((row) => row.isActive !== false);
 }
 
 async function listLayers(kind) {
   const mode = MODES[kind];
   if (!mode || kind === 'purpose') return null;
   const beads = await loadBeads();
-  const items = catalogFor(kind).map((item) => decorateItem(kind, item, beads));
+  const items = (await loadCatalog(kind)).map((item) => decorateItem(kind, item, beads));
   return { kind, label: mode.label, path: mode.path, items };
 }
 
 async function getLayerItem(kind, slug) {
-  const list = catalogFor(kind);
-  const item = list.find((row) => String(row.slug) === String(slug));
+  await ensureStudioLayers();
+  const fromDb = await StudioLayer.findOne({ kind, slug: String(slug) }).lean();
+  if (fromDb) {
+    if (fromDb.isActive === false) return null;
+    const beads = await loadBeads();
+    return decorateItem(kind, fromDb, beads);
+  }
+  const count = await StudioLayer.countDocuments({ kind });
+  if (count) return null;
+  const item = catalogFor(kind).find((row) => String(row.slug) === String(slug));
   if (!item) return null;
   const beads = await loadBeads();
   return decorateItem(kind, item, beads);

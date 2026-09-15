@@ -51,4 +51,10 @@ router.post('/admin/charms', requireAuth, requireAdmin, ctrl.adminSaveCharm);
 router.put('/admin/charms/:id', requireAuth, requireAdmin, ctrl.adminSaveCharm);
 router.put('/admin/config', requireAuth, requireAdmin, ctrl.adminSaveConfig);
 
+router.get('/admin/layers', requireAuth, requireAdmin, ctrl.adminLayers);
+router.post('/admin/layers', requireAuth, requireAdmin, ctrl.adminSaveLayer);
+router.post('/admin/layers/restore', requireAuth, requireAdmin, ctrl.adminRestoreLayers);
+router.put('/admin/layers/:id', requireAuth, requireAdmin, ctrl.adminSaveLayer);
+router.delete('/admin/layers/:id', requireAuth, requireAdmin, ctrl.adminDeleteLayer);
+
 module.exports = router;

@@ -105,6 +105,7 @@ async function buildCustomSnapshot(payload) {
     purpose: payload.purpose,
     intention: payload.intention,
     layer: payload.layer || payload.snapshot?.layer,
+    layerSelections: payload.snapshot?.layerSelections,
     dateOfBirth: payload.dateOfBirth || payload.snapshot?.dateOfBirth || '',
     mulank: payload.snapshot?.mulank,
     bhagyank: payload.snapshot?.bhagyank,

@@ -14,6 +14,7 @@ const SiteContent = require('../models/SiteContent');
 const Cart = require('../models/Cart');
 const MulankCrystal = require('../models/MulankCrystal');
 const ZodiacBead = require('../models/ZodiacBead');
+const StudioLayer = require('../models/StudioLayer');
 const { slugifyName } = require('../utils/asyncHandler');
 const StoreSettings = require('../models/StoreSettings');
 const Collection = require('../models/Collection');
@@ -39,6 +40,8 @@ const WebhookEvent = require('../models/WebhookEvent');
 const { seedNumerologyMappings } = require('./seedNumerology');
 const { seedPlatform } = require('./seedPlatform');
 const { HOME_DEFAULTS } = require('../data/homeContent');
+const { catalogPriceFor } = require('../data/beadPriceSource');
+const { ensureStudioLayers } = require('./ensureStudioLayers');
 
 const DISCLAIMER =
   'These are traditional and spiritual associations, not medical claims. Kuberstones products are not intended to diagnose, treat, or cure any condition.';
@@ -319,6 +322,17 @@ const BEADS = [
     colorHex: '#8BB8D4',
     image: '/catalog/beads/bead-sodalite.jpg',
   },
+  {
+    name: 'Howlite',
+    shortDescriptor: 'Quiet mind',
+    powerUse: 'Softens restlessness so thought and rest can settle.',
+    benefits: ['Calms the mind', 'Supports patience', 'Eases tension', 'Aids rest'],
+    chakra: 'Crown',
+    careNotes: 'Avoid harsh cleaners. Soft cloth only.',
+    pricePerBead: 20,
+    colorHex: '#E8E4DC',
+    image: '/catalog/beads/bead-clear-quartz.jpg',
+  },
 ];
 
 const PURPOSES = [
@@ -423,6 +437,7 @@ async function run() {
     Cart.deleteMany({}),
     MulankCrystal.deleteMany({}),
     ZodiacBead.deleteMany({}),
+    StudioLayer.deleteMany({}),
     StoreSettings.deleteMany({}),
     Collection.deleteMany({}),
     Attribute.deleteMany({}),
@@ -673,6 +688,7 @@ async function run() {
     BEADS.map((b) => ({
       ...b,
       slug: slugifyName(b.name),
+      pricePerBead: catalogPriceFor(b.name) ?? b.pricePerBead,
       disclaimer: DISCLAIMER,
       stock: 500,
       isActive: true,
@@ -762,6 +778,8 @@ async function run() {
     products: productDocs,
     beads: beadDocs,
   });
+
+  await ensureStudioLayers();
 
   console.log('Seed complete. Catalog, customizer, and store models are filled.');
   console.log(`Admin: ${admin.email} / ${process.env.ADMIN_PASSWORD || 'Admin@123'}`);

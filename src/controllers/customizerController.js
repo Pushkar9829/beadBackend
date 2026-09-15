@@ -13,6 +13,9 @@ const { calibrate } = require('../services/calibrationService');
 const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
 const { MODES } = require('../data/studioLayers');
 const studioLayers = require('../services/studioLayerService');
+const StudioLayer = require('../models/StudioLayer');
+const { KINDS: LAYER_KINDS } = StudioLayer;
+const { ensureStudioLayers, restoreStudioLayers } = require('../seed/ensureStudioLayers');
 
 exports.purposes = asyncHandler(async (_req, res) => {
   const purposes = await Purpose.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
@@ -322,4 +325,67 @@ exports.adminSaveConfig = asyncHandler(async (req, res) => {
     await config.save();
   }
   res.json({ config });
+});
+
+function parseNameList(value) {
+  if (Array.isArray(value)) return value.map((s) => String(s).trim()).filter(Boolean);
+  return String(value || '')
+    .split(/[,•\n|;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function normalizeLayerBody(body) {
+  const data = cleanBody(body);
+  ['suitable', 'recommended', 'mulank', 'bhagyank'].forEach((key) => {
+    if (data[key] != null) data[key] = parseNameList(data[key]);
+  });
+  if (data.number != null && data.number !== '') data.number = Number(data.number);
+  if (!data.slug && data.name) data.slug = slugifyName(data.name);
+  if (!data.slug && data.number != null) data.slug = String(data.number);
+  ['fromMonth', 'fromDay', 'toMonth', 'toDay', 'sortOrder'].forEach((key) => {
+    if (data[key] === '' || data[key] == null) {
+      delete data[key];
+      return;
+    }
+    data[key] = Number(data[key]);
+  });
+  return data;
+}
+
+exports.adminLayers = asyncHandler(async (req, res) => {
+  await ensureStudioLayers();
+  const kind = req.query.kind;
+  const filter = kind ? { kind } : {};
+  const items = await StudioLayer.find(filter).sort({ kind: 1, sortOrder: 1, number: 1, name: 1 }).lean();
+  res.json({ items });
+});
+
+exports.adminSaveLayer = asyncHandler(async (req, res) => {
+  const data = normalizeLayerBody(req.body);
+  if (!LAYER_KINDS.includes(data.kind)) return res.status(400).json({ message: 'Choose a catalog kind.' });
+  if (!data.slug) return res.status(400).json({ message: 'A slug or name is required.' });
+  const item = req.params.id
+    ? await StudioLayer.findByIdAndUpdate(req.params.id, data, { new: true })
+    : await StudioLayer.findOneAndUpdate(
+        { kind: data.kind, slug: data.slug },
+        data,
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+  if (!item) return res.status(404).json({ message: 'Catalog row not found.' });
+  res.json({ item });
+});
+
+exports.adminDeleteLayer = asyncHandler(async (req, res) => {
+  await StudioLayer.findByIdAndDelete(req.params.id);
+  res.json({ ok: true });
+});
+
+exports.adminRestoreLayers = asyncHandler(async (req, res) => {
+  const kind = String(req.body.kind || req.query.kind || '');
+  if (!LAYER_KINDS.includes(kind)) {
+    return res.status(400).json({ message: 'Choose a catalog to restore.' });
+  }
+  const result = await restoreStudioLayers(kind);
+  res.json(result);
 });
