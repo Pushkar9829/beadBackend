@@ -8,6 +8,8 @@ const morgan = require('morgan');
 const { connectDb } = require('./config/db');
 const { ensureLayerBeads } = require('./seed/ensureLayerBeads');
 const { ensureAuthAccounts } = require('./seed/ensureAuthAccounts');
+const { ensureStudioLayers } = require('./seed/ensureStudioLayers');
+const { ensurePurposeCatalog } = require('./seed/ensurePurposeCatalog');
 const { notFound, errorHandler } = require('./middleware/error');
 const { optionalAuth } = require('./middleware/auth');
 const contentController = require('./controllers/contentController');
@@ -107,12 +109,18 @@ connectDb()
       const beads = await ensureLayerBeads();
       if (beads.created.length) console.log(`Layer beads added: ${beads.created.join(', ')}`);
       if (beads.priced?.length) console.log(`Catalog prices applied: ${beads.priced.join(', ')}`);
+      const catalog = await ensurePurposeCatalog();
+      if (catalog?.intentions) console.log(`Purpose catalog: ${catalog.purposes} purposes, ${catalog.intentions} intentions.`);
       const layers = await ensureStudioLayers();
-      if (layers.created.length) console.log(`Studio layers added: ${layers.created.join(', ')}`);
+      if (layers.created.length) console.log(`Studio layers synced: ${layers.created.length}`);
     } catch (err) {
       console.warn('Layer beads:', err.message);
     }
-    app.listen(port, () => console.log(`Kuberstones API on http://localhost:${port}`));
+    app.listen(port, () => {
+      const { s3Enabled } = require('./lib/objectStorage');
+      console.log(`Kuberstones API on http://localhost:${port}`);
+      console.log(s3Enabled() ? 'Media uploads: Amazon S3' : 'Media uploads: local /uploads (set AWS_S3_BUCKET to use S3)');
+    });
   })
   .catch((err) => {
     console.error('Failed to start', err);

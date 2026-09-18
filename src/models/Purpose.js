@@ -6,6 +6,7 @@ const purposeSchema = new mongoose.Schema(
     slug: { type: String, required: true, unique: true, lowercase: true },
     description: String,
     icon: String,
+    image: String,
     sortOrder: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
   },

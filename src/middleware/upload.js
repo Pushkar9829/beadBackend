@@ -1,30 +1,31 @@
-const path = require('path');
-const fs = require('fs');
 const multer = require('multer');
 
-const uploadDir = path.join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
-  },
-});
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
   limits: { fileSize: 40 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const ok =
-      file.mimetype.startsWith('image/') ||
-      file.mimetype === 'video/mp4' ||
-      file.mimetype === 'video/webm' ||
-      file.mimetype === 'video/quicktime';
-    if (!ok) return cb(new Error('Only image or video uploads are allowed.'));
+    const ok = file.mimetype.startsWith('image/')
+      || file.mimetype === 'video/mp4'
+      || file.mimetype === 'video/webm'
+      || file.mimetype === 'video/quicktime';
+    if (!ok) return cb(new Error('Only images and mp4/webm/mov videos are allowed.'));
     cb(null, true);
   },
 });
 
-module.exports = { upload };
+function uploadSingle(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      err.status = 413;
+      err.message = 'File is too large (max 40MB).';
+    } else {
+      err.status = 400;
+    }
+    next(err);
+  });
+}
+
+module.exports = { upload, uploadSingle };

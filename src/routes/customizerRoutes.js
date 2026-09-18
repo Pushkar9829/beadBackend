@@ -49,6 +49,7 @@ router.delete('/admin/zodiac/:id', requireAuth, requireAdmin, ctrl.adminDeleteZo
 router.get('/admin/charms', requireAuth, requireAdmin, ctrl.adminCharms);
 router.post('/admin/charms', requireAuth, requireAdmin, ctrl.adminSaveCharm);
 router.put('/admin/charms/:id', requireAuth, requireAdmin, ctrl.adminSaveCharm);
+router.delete('/admin/charms/:id', requireAuth, requireAdmin, ctrl.adminDeleteCharm);
 router.put('/admin/config', requireAuth, requireAdmin, ctrl.adminSaveConfig);
 
 router.get('/admin/layers', requireAuth, requireAdmin, ctrl.adminLayers);

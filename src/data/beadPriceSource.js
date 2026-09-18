@@ -36,4 +36,14 @@ function catalogPriceFor(name) {
   return key == null ? null : BEAD_PRICE_SOURCE[key];
 }
 
-module.exports = { BEAD_PRICE_SOURCE, catalogPriceFor };
+/** Workbook selling price is 2.5× cost. Red Jasper is not on the price sheet. */
+function sellingPriceFor(name) {
+  const cost = catalogPriceFor(name);
+  if (cost == null) {
+    if (/red jasper/i.test(String(name || ''))) return 42;
+    return null;
+  }
+  return Math.round(cost * 2.5 * 1000) / 1000;
+}
+
+module.exports = { BEAD_PRICE_SOURCE, catalogPriceFor, sellingPriceFor };

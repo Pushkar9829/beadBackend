@@ -2,7 +2,7 @@ require('dotenv').config();
 const { connectDb } = require('../config/db');
 const Bead = require('../models/Bead');
 const { slugifyName } = require('../utils/asyncHandler');
-const { catalogPriceFor } = require('../data/beadPriceSource');
+const { sellingPriceFor } = require('../data/beadPriceSource');
 
 const DISCLAIMER =
   'These are traditional and spiritual associations, not medical claims. Kuberstones products are not intended to diagnose, treat, or cure any condition.';
@@ -15,7 +15,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Lifts mood', 'Supports leadership', 'Invites optimism', 'Energises the day'],
     chakra: 'Solar Plexus / Sacral',
     careNotes: 'Avoid harsh chemicals. Soft cloth only.',
-    pricePerBead: catalogPriceFor('Sunstone') ?? 100,
+    pricePerBead: sellingPriceFor('Sunstone') ?? 250,
     colorHex: '#E39B4A',
     image: '/catalog/beads/bead-citrine.jpg',
   },
@@ -37,7 +37,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Supports focus', 'Calms overthinking', 'Aids learning', 'Sorts priorities'],
     chakra: 'Third Eye',
     careNotes: 'Keep away from prolonged sunlight.',
-    pricePerBead: catalogPriceFor('Fluorite') ?? 18,
+    pricePerBead: sellingPriceFor('Fluorite') ?? 45,
     colorHex: '#7B8FD4',
     image: '/catalog/beads/bead-sodalite.jpg',
   },
@@ -48,7 +48,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Soothes anxiety', 'Supports rest', 'Balances mood', 'Eases transition'],
     chakra: 'Heart / Crown',
     careNotes: 'Handle gently. Avoid water soaks.',
-    pricePerBead: catalogPriceFor('Lepidolite') ?? 50,
+    pricePerBead: sellingPriceFor('Lepidolite') ?? 125,
     colorHex: '#A88BB8',
     image: '/catalog/beads/bead-amethyst.jpg',
   },
@@ -59,7 +59,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Protects the field', 'Grounds quickly', 'Releases heaviness', 'Clarifies truth'],
     chakra: 'Root',
     careNotes: 'Wipe clean. Keep separate from softer stones in storage.',
-    pricePerBead: catalogPriceFor('Obsidian') ?? 22,
+    pricePerBead: sellingPriceFor('Obsidian') ?? 55,
     colorHex: '#1A1A1A',
     image: '/catalog/beads/bead-black-tourmaline.jpg',
   },
@@ -70,7 +70,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Grounds energy', 'Supports focus', 'Strengthens resolve', 'Balances drive'],
     chakra: 'Root',
     careNotes: 'Keep dry. Wipe with a soft cloth.',
-    pricePerBead: catalogPriceFor('Hematite') ?? 4.5,
+    pricePerBead: sellingPriceFor('Hematite') ?? 11.25,
     colorHex: '#6B6F76',
     image: '/catalog/beads/bead-black-tourmaline.jpg',
   },
@@ -81,7 +81,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Grounds stress', 'Clears residue', 'Supports discipline', 'Softens overwhelm'],
     chakra: 'Root',
     careNotes: 'Rinse in lukewarm water. Dry thoroughly.',
-    pricePerBead: catalogPriceFor('Smoky Quartz') ?? 64,
+    pricePerBead: sellingPriceFor('Smoky Quartz') ?? 160,
     colorHex: '#6B5344',
     image: '/catalog/beads/bead-black-tourmaline.jpg',
   },
@@ -92,7 +92,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Grounds the field', 'Supports cleansing rituals', 'Steadies mood', 'Holds a boundary'],
     chakra: 'Root',
     careNotes: 'Wipe dry. Do not soak for long periods.',
-    pricePerBead: catalogPriceFor('Shungite') ?? 134,
+    pricePerBead: sellingPriceFor('Shungite') ?? 335,
     colorHex: '#111111',
     image: '/catalog/beads/bead-black-tourmaline.jpg',
   },
@@ -103,7 +103,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Calms communication', 'Soothes tension', 'Supports kindness in speech', 'Cools heat'],
     chakra: 'Throat',
     careNotes: 'Avoid harsh cleaners. Soft cloth only.',
-    pricePerBead: catalogPriceFor('Blue Lace Agate') ?? 467,
+    pricePerBead: sellingPriceFor('Blue Lace Agate') ?? 1167.5,
     colorHex: '#8BB8D4',
     image: '/catalog/beads/bead-sodalite.jpg',
   },
@@ -114,7 +114,7 @@ const EXTRA_LAYER_BEADS = [
     benefits: ['Calms the mind', 'Supports patience', 'Eases tension', 'Aids rest'],
     chakra: 'Crown',
     careNotes: 'Avoid harsh cleaners. Soft cloth only.',
-    pricePerBead: catalogPriceFor('Howlite') ?? 20,
+    pricePerBead: sellingPriceFor('Howlite') ?? 50,
     colorHex: '#E8E4DC',
     image: '/catalog/beads/bead-clear-quartz.jpg',
   },
@@ -140,7 +140,7 @@ async function ensureLayerBeads() {
 
   const all = await Bead.find();
   for (const bead of all) {
-    const price = catalogPriceFor(bead.name);
+    const price = sellingPriceFor(bead.name);
     if (price == null || price <= 0) continue;
     if (Number(bead.pricePerBead) === Number(price)) continue;
     bead.pricePerBead = price;

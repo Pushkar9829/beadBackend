@@ -747,23 +747,33 @@ async function run() {
       slug: 'sriyantra',
       description: 'The Sriyantra charm — geometry of abundance at the clasp.',
       isActive: true,
-      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#D4AF37' }],
+      finishes: [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#D4AF37' }],
     },
     {
       name: 'Om',
       slug: 'om',
       description: 'The Om charm — a quiet seal at the clasp.',
       isActive: true,
-      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#E8D5A3' }],
+      finishes: [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#E8D5A3' }],
     },
   ]);
 
   await BraceletConfig.create({
-    beadLimit: 18,
+    beadLimit: 32,
     minBeads: 1,
-    baseMakingPrice: 499,
+    baseMakingPrice: 0,
     wristSizes: ['5.5"', '6"', '6.5"', '7"', '7.5"', '8"'],
     defaultWristSize: '6.5"',
+    beadSizesMm: [6, 8, 10],
+    defaultBeadSizeMm: 8,
+    packaging: {
+      box: 44,
+      clasp: 10,
+      charm: 60,
+      cz: 6,
+      roundCz: 8,
+      thread: 20,
+    },
     zodiacBeadCount: 2,
   });
 

@@ -228,9 +228,9 @@ async function calibrate({
   const finish = charm?.finishes?.find((f) => f.key === finishKey) || charm?.finishes?.[0];
   const beads = quantitiesFromLayout(layout);
   const quote = calculateCustomTotal({
-    baseMakingPrice: config?.baseMakingPrice || 0,
     beads,
-    charmPrice: finish?.price || 0,
+    packaging: config?.packaging,
+    czStyle: 'cz',
     addOns: 0,
     beadLimit,
     minBeads: config?.minBeads || 1,

@@ -11,7 +11,7 @@ const { getRecommendedBeads } = require('../services/recommendationService');
 const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
 const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
-const { MODES } = require('../data/studioLayers');
+const { withStudioDefaults, activeStudioModes } = require('../data/studioConfigDefaults');
 const studioLayers = require('../services/studioLayerService');
 const StudioLayer = require('../models/StudioLayer');
 const { KINDS: LAYER_KINDS } = StudioLayer;
@@ -41,42 +41,39 @@ exports.recommendedBeads = asyncHandler(async (req, res) => {
 });
 
 exports.charms = asyncHandler(async (_req, res) => {
-  const charms = await ensureStudioCharms();
+  await seedDefaultCharms();
+  const charms = await Charm.find({ isActive: true }).sort({ name: 1 }).lean();
   res.json({ charms });
 });
 
-async function ensureStudioCharms() {
+async function seedDefaultCharms() {
   const wanted = [
     {
       name: 'Sriyantra',
       slug: 'sriyantra',
       description: 'The Sriyantra charm — geometry of abundance at the clasp.',
       isActive: true,
-      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#D4AF37' }],
+      finishes: [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#D4AF37' }],
     },
     {
       name: 'Om',
       slug: 'om',
       description: 'The Om charm — a quiet seal at the clasp.',
       isActive: true,
-      finishes: [{ key: 'gold', label: 'Gold', price: 299, metalColor: '#E8D5A3' }],
+      finishes: [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#E8D5A3' }],
     },
   ];
-  const docs = [];
   for (const charm of wanted) {
-    const saved = await Charm.findOneAndUpdate(
+    await Charm.findOneAndUpdate(
       { slug: charm.slug },
-      charm,
-      { upsert: true, new: true, setDefaultsOnInsert: true },
+      { $setOnInsert: charm },
+      { upsert: true, setDefaultsOnInsert: true }
     );
-    docs.push(saved);
   }
-  await Charm.updateMany({ slug: { $nin: ['sriyantra', 'om'] } }, { isActive: false });
-  return docs.map((d) => (d.toObject ? d.toObject() : d));
 }
 
 exports.config = asyncHandler(async (_req, res) => {
-  const config = await BraceletConfig.findOne().lean();
+  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
   res.json({ config });
 });
 
@@ -89,7 +86,8 @@ exports.beads = asyncHandler(async (_req, res) => {
 });
 
 exports.studioModes = asyncHandler(async (_req, res) => {
-  res.json({ modes: Object.values(MODES) });
+  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
+  res.json({ modes: activeStudioModes(config) });
 });
 
 exports.studioLayerList = asyncHandler(async (req, res) => {
@@ -147,8 +145,8 @@ exports.calibrate = asyncHandler(async (req, res) => {
 });
 
 exports.quote = asyncHandler(async (req, res) => {
-  const config = await BraceletConfig.findOne().lean();
-  const { beads = [], charmId, finishKey, addOns = 0 } = req.body;
+  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
+  const { beads = [], charmId, finishKey, addOns = 0, czStyle } = req.body;
   const charm = charmId ? await Charm.findById(charmId).lean() : await Charm.findOne({ isActive: true }).lean();
   const finish = charm?.finishes?.find((f) => f.key === finishKey) || charm?.finishes?.[0];
   const beadDocs = await Bead.find({ _id: { $in: beads.map((b) => b.beadId) } }).lean();
@@ -159,9 +157,11 @@ exports.quote = asyncHandler(async (req, res) => {
     pricePerBead: byId[String(b.beadId)]?.pricePerBead || 0,
   }));
   const quote = calculateCustomTotal({
-    baseMakingPrice: config.baseMakingPrice,
     beads: priced,
-    charmPrice: finish?.price || 0,
+    packaging: config.packaging,
+    packagingLabels: config.packagingLabels,
+    czOptions: config.czOptions,
+    czStyle: czStyle || config.defaultCzStyle,
     addOns,
     beadLimit: config.beadLimit,
     minBeads: config.minBeads,
@@ -302,29 +302,58 @@ exports.adminDeleteZodiac = asyncHandler(async (req, res) => {
 });
 
 exports.adminCharms = asyncHandler(async (_req, res) => {
-  await ensureStudioCharms();
-  const charms = await Charm.find().lean();
-  const config = await BraceletConfig.findOne().lean();
+  await seedDefaultCharms();
+  const charms = await Charm.find().sort({ name: 1 }).lean();
+  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
   res.json({ charms, config });
 });
 
 exports.adminSaveCharm = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
+  if (!data.slug && data.name) data.slug = slugifyName(data.name);
+  if (!Array.isArray(data.finishes) || !data.finishes.length) {
+    data.finishes = [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#D4AF37' }];
+  }
   const charm = req.params.id
     ? await Charm.findByIdAndUpdate(req.params.id, data, { new: true })
     : await Charm.create(data);
   res.json({ charm });
 });
 
+exports.adminDeleteCharm = asyncHandler(async (req, res) => {
+  await Charm.findByIdAndDelete(req.params.id);
+  res.json({ ok: true });
+});
+
 exports.adminSaveConfig = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
+  delete data._id;
+  delete data.__v;
+  delete data.createdAt;
+  delete data.updatedAt;
+  if (Array.isArray(data.beadSizesMm)) {
+    data.beadSizesMm = data.beadSizesMm.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  }
+  if (Array.isArray(data.czOptions)) {
+    data.czOptions = data.czOptions.map((row) => ({
+      ...row,
+      price: Number(row.price) || 0,
+    }));
+    const cz = data.czOptions.find((row) => row.key === 'cz' || row.key !== 'round');
+    const round = data.czOptions.find((row) => row.key === 'round');
+    data.packaging = {
+      ...(data.packaging || {}),
+      cz: cz ? Number(cz.price) || 0 : data.packaging?.cz,
+      roundCz: round ? Number(round.price) || 0 : data.packaging?.roundCz,
+    };
+  }
   let config = await BraceletConfig.findOne();
   if (!config) config = await BraceletConfig.create(data);
   else {
     Object.assign(config, data);
     await config.save();
   }
-  res.json({ config });
+  res.json({ config: withStudioDefaults(config.toObject()) });
 });
 
 function parseNameList(value) {

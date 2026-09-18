@@ -4,7 +4,7 @@ const Bead = require('../models/Bead');
 const Charm = require('../models/Charm');
 const BraceletConfig = require('../models/BraceletConfig');
 const { calculateCustomTotal } = require('../services/pricingService');
-const { calibrate } = require('../services/calibrationService');
+const { withStudioDefaults } = require('../data/studioConfigDefaults');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { quote: quoteCart } = require('../services/checkoutService');
 const { findUsableCoupon, validateCoupon } = require('../services/couponService');
@@ -16,51 +16,20 @@ async function getOrCreateCart(userId) {
 }
 
 async function buildCustomSnapshot(payload) {
-  const config = await BraceletConfig.findOne().lean();
-  const charm = await Charm.findById(payload.charmId).lean();
-  if (!charm) {
+  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
+  const charm = payload.charmId ? await Charm.findById(payload.charmId).lean() : null;
+  if (config.charmRequired !== false && !charm) {
     const err = new Error('Please choose a charm.');
     err.status = 400;
     throw err;
   }
-  const finish = charm.finishes.find((f) => f.key === payload.finishKey) || charm.finishes[0];
-  const pieceName = `${payload.intention?.name || 'Custom bracelet'} · ${charm.name}`;
+  const finish = charm?.finishes?.find((f) => f.key === payload.finishKey) || charm?.finishes?.[0];
+  const braceletName =
+    payload.intention?.braceletName ||
+    payload.intention?.name ||
+    'Custom bracelet';
+  const pieceName = payload.snapshot?.name || (charm?.name ? `${braceletName} · ${charm.name}` : braceletName);
   const wristSize = payload.wristSize || payload.snapshot?.wristSize || config.defaultWristSize;
-
-  if (payload.dateOfBirth && (payload.intentionId || payload.intention?.id)) {
-    const calibrated = await calibrate({
-      intentionId: payload.intentionId || payload.intention.id,
-      dateOfBirth: payload.dateOfBirth,
-      includeZodiac: payload.includeZodiac !== false,
-      zodiacQty: payload.zodiacQty,
-      charmId: charm._id,
-      finishKey: finish.key,
-    });
-    if (!calibrated.quote.valid) {
-      const err = new Error(calibrated.quote.errors.join(' '));
-      err.status = 400;
-      throw err;
-    }
-    return {
-      kind: 'custom_bracelet',
-      name: pieceName,
-      purpose: payload.purpose,
-      intention: payload.intention,
-      dateOfBirth: calibrated.dateOfBirth,
-      mulank: calibrated.mulank,
-      bhagyank: calibrated.bhagyank,
-      mulankCrystal: calibrated.mulankCrystal,
-      zodiac: calibrated.zodiac,
-      layout: calibrated.layout,
-      beads: calibrated.beads,
-      explanation: calibrated.explanation,
-      charm: { id: charm._id, name: charm.name, slug: charm.slug },
-      finish,
-      threadType: payload.threadType || payload.snapshot?.threadType,
-      wristSize,
-      pricing: calibrated.quote,
-    };
-  }
 
   const beadIds = (payload.beads || []).map((b) => b.beadId);
   const beadDocs = await Bead.find({ _id: { $in: beadIds } }).lean();
@@ -85,9 +54,11 @@ async function buildCustomSnapshot(payload) {
     .filter(Boolean);
 
   const quote = calculateCustomTotal({
-    baseMakingPrice: config.baseMakingPrice,
     beads,
-    charmPrice: finish.price,
+    packaging: config.packaging,
+    packagingLabels: config.packagingLabels,
+    czOptions: config.czOptions,
+    czStyle: payload.czStyle || payload.snapshot?.czStyle || config.defaultCzStyle || 'cz',
     addOns: payload.addOns || 0,
     beadLimit: config.beadLimit,
     minBeads: config.minBeads,
@@ -112,10 +83,13 @@ async function buildCustomSnapshot(payload) {
     zodiac: payload.snapshot?.zodiac,
     explanation: payload.snapshot?.explanation,
     beads: quote.lines.map((line, i) => ({ ...beads[i], ...line })),
-    charm: { id: charm._id, name: charm.name, slug: charm.slug },
+    charm: charm ? { id: charm._id, name: charm.name, slug: charm.slug } : null,
     finish,
     threadType: payload.threadType || payload.snapshot?.threadType,
     wristSize,
+    beadSizeMm: payload.beadSizeMm || payload.snapshot?.beadSizeMm,
+    czStyle: payload.czStyle || payload.snapshot?.czStyle || 'cz',
+    engravingName: payload.engravingName || payload.snapshot?.engravingName || '',
     pricing: quote,
   };
 }

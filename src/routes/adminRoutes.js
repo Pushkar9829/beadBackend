@@ -3,7 +3,7 @@ const ctrl = require('../controllers/adminController');
 const commerce = require('../controllers/commerceController');
 const platform = require('../controllers/platformController');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
-const { upload } = require('../middleware/upload');
+const { uploadSingle } = require('../middleware/upload');
 
 const router = express.Router();
 
@@ -19,9 +19,9 @@ router.put('/users/:id', ctrl.updateUser);
 router.get('/content', ctrl.content);
 router.put('/content', ctrl.saveContent);
 router.get('/media', ctrl.listMedia);
-router.post('/media', upload.single('file'), ctrl.uploadMedia);
+router.post('/media', uploadSingle, ctrl.uploadMedia);
 router.put('/media/:id', ctrl.updateMedia);
-router.post('/media/:id/replace', upload.single('file'), ctrl.replaceMedia);
+router.post('/media/:id/replace', uploadSingle, ctrl.replaceMedia);
 router.delete('/media/:id', ctrl.deleteMedia);
 
 router.get('/collections', commerce.listCollections);

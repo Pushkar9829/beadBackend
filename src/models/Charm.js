@@ -5,6 +5,7 @@ const charmSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true },
     description: String,
+    image: String,
     isActive: { type: Boolean, default: true },
     finishes: [
       {

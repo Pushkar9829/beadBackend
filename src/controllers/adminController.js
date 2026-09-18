@@ -3,6 +3,12 @@ const SiteContent = require('../models/SiteContent');
 const Media = require('../models/Media');
 const { mergeHomeContent } = require('../data/homeContent');
 const { asyncHandler } = require('../utils/asyncHandler');
+const { putFile, deleteStored } = require('../lib/objectStorage');
+
+function mediaFolder(raw) {
+  const v = String(raw || 'other').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return v && v !== 'all' ? v : 'other';
+}
 
 exports.users = asyncHandler(async (_req, res) => {
   const users = await User.find().select('-passwordHash').sort({ createdAt: -1 }).lean();
@@ -62,34 +68,37 @@ exports.listMedia = asyncHandler(async (req, res) => {
 
 exports.uploadMedia = asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'No file uploaded.' });
-  const url = `/uploads/${req.file.filename}`;
+  const folder = mediaFolder(req.body.folder);
+  const stored = await putFile(req.file, { folder });
   const media = await Media.create({
-    filename: req.file.filename,
+    filename: stored.filename,
     originalName: req.file.originalname,
-    url,
+    url: stored.url,
+    key: stored.key,
+    storage: stored.storage,
     mimeType: req.file.mimetype,
     size: req.file.size,
-    folder: req.body.folder || 'other',
+    folder,
     tags: req.body.tags ? String(req.body.tags).split(',').map((s) => s.trim()).filter(Boolean) : [],
   });
   res.status(201).json({ media });
 });
 
 exports.replaceMedia = asyncHandler(async (req, res) => {
-  const fs = require('fs');
-  const path = require('path');
   const media = await Media.findById(req.params.id);
   if (!media) return res.status(404).json({ message: 'File not found.' });
   if (!req.file) return res.status(400).json({ message: 'No file uploaded.' });
-  if (media.filename) {
-    fs.unlink(path.join(__dirname, '../../uploads', media.filename), () => {});
-  }
-  media.filename = req.file.filename;
+  await deleteStored(media);
+  const folder = mediaFolder(req.body.folder || media.folder);
+  const stored = await putFile(req.file, { folder });
+  media.filename = stored.filename;
   media.originalName = req.file.originalname;
-  media.url = `/uploads/${req.file.filename}`;
+  media.url = stored.url;
+  media.key = stored.key;
+  media.storage = stored.storage;
   media.mimeType = req.file.mimetype;
   media.size = req.file.size;
-  if (req.body.folder) media.folder = req.body.folder;
+  media.folder = folder;
   if (req.body.tags) media.tags = String(req.body.tags).split(',').map((s) => s.trim()).filter(Boolean);
   await media.save();
   res.json({ media });
@@ -114,14 +123,9 @@ exports.updateMedia = asyncHandler(async (req, res) => {
 });
 
 exports.deleteMedia = asyncHandler(async (req, res) => {
-  const fs = require('fs');
-  const path = require('path');
   const media = await Media.findById(req.params.id);
   if (!media) return res.status(404).json({ message: 'File not found.' });
-  if (media.filename) {
-    const filePath = path.join(__dirname, '../../uploads', media.filename);
-    fs.unlink(filePath, () => {});
-  }
+  await deleteStored(media);
   await media.deleteOne();
   res.json({ ok: true });
 });

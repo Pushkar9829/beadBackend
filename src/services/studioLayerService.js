@@ -75,6 +75,9 @@ function decorateItem(kind, item, beads) {
       slug: item.slug,
       number: Number(item.number ?? item.slug),
       name: publicLayerName(item),
+      description: item.description || '',
+      image: item.image || '',
+      icon: item.icon || '',
       theme: item.theme,
       shared: [...shared],
       mulank: attachNames(item.mulank, beads, { shared }),
@@ -87,6 +90,9 @@ function decorateItem(kind, item, beads) {
   return {
     slug: item.slug,
     name: item.name,
+    description: item.description || '',
+    image: item.image || '',
+    icon: item.icon || '',
     hindi: item.hindi,
     dates: item.dates,
     theme: item.theme,
@@ -94,7 +100,7 @@ function decorateItem(kind, item, beads) {
     recommended: attachNames(item.recommended, beads, { core }),
     rule: kind === 'zodiac'
       ? 'Keep any 3 or all 4 recommended crystals. Suitable catalog stones may be added. Traditional symbolism, not medical claims.'
-      : 'Keep any 3 or all 4 recommended crystals, then continue to charm and review.',
+      : 'Keep any 3 or all 4 recommended crystals, then the same studio steps as purpose: bead size, wrist, design, personalise, review.',
   };
 }
 

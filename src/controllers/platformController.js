@@ -17,6 +17,8 @@ const User = require('../models/User');
 const Cart = require('../models/Cart');
 const Collection = require('../models/Collection');
 const StoreSettings = require('../models/StoreSettings');
+const BraceletConfig = require('../models/BraceletConfig');
+const { activeStudioModes } = require('../data/studioConfigDefaults');
 const { asyncHandler, slugifyName, cleanBody, escapeRegex } = require('../utils/asyncHandler');
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { notify, unreadCount } = require('../services/notificationService');
@@ -589,7 +591,10 @@ exports.publicCoupons = asyncHandler(async (req, res) => {
 });
 
 exports.publicStore = asyncHandler(async (_req, res) => {
-  const settings = await StoreSettings.findOne({ key: 'store' }).lean();
+  const [settings, bracelet] = await Promise.all([
+    StoreSettings.findOne({ key: 'store' }).lean(),
+    BraceletConfig.findOne().lean(),
+  ]);
   res.json({
     store: {
       storeName: settings?.storeName || 'Kuberstones',
@@ -605,6 +610,7 @@ exports.publicStore = asyncHandler(async (_req, res) => {
         noIndex: Boolean(settings?.seo?.noIndex),
       },
     },
+    studioModes: activeStudioModes(bracelet),
   });
 });
 
