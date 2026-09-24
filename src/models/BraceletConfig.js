@@ -5,6 +5,8 @@ const threadTypeSchema = new mongoose.Schema(
     key: { type: String, required: true, trim: true },
     label: { type: String, required: true, trim: true },
     detail: { type: String, default: '' },
+    icon: { type: String, default: '' },
+    image: { type: String, default: '' },
   },
   { _id: false }
 );
@@ -14,6 +16,8 @@ const czOptionSchema = new mongoose.Schema(
     key: { type: String, required: true, trim: true },
     label: { type: String, required: true, trim: true },
     detail: { type: String, default: '' },
+    icon: { type: String, default: '' },
+    image: { type: String, default: '' },
     price: { type: Number, default: 0, min: 0 },
   },
   { _id: false }
@@ -28,6 +32,8 @@ const studioModeSchema = new mongoose.Schema(
     title: { type: String, default: '' },
     body: { type: String, default: '' },
     chooseHint: { type: String, default: '' },
+    icon: { type: String, default: '' },
+    image: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
     sortOrder: { type: Number, default: 0 },
   },

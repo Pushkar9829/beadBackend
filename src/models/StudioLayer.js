@@ -12,6 +12,8 @@ const studioLayerSchema = new mongoose.Schema(
     description: { type: String, trim: true, default: '' },
     image: { type: String, trim: true, default: '' },
     icon: { type: String, trim: true, default: '' },
+    cardBg: { type: String, trim: true, default: '' },
+    cardAccent: { type: String, trim: true, default: '' },
     hindi: { type: String, trim: true, default: '' },
     dates: { type: String, trim: true, default: '' },
     fromMonth: Number,

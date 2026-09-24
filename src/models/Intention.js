@@ -9,6 +9,8 @@ const intentionSchema = new mongoose.Schema(
     description: String,
     icon: String,
     image: String,
+    cardBg: { type: String, trim: true, default: '' },
+    cardAccent: { type: String, trim: true, default: '' },
     sortOrder: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
   },
