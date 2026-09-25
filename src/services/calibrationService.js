@@ -196,6 +196,7 @@ async function calibrate({
   dateOfBirth,
   includeZodiac = false,
   zodiacQty,
+  beadCount,
   charmId,
   finishKey,
 }) {
@@ -209,7 +210,8 @@ async function calibrate({
     BraceletConfig.findOne().lean(),
   ]);
 
-  const beadLimit = config?.beadLimit || 18;
+  const chosen = Number(beadCount);
+  const beadLimit = [16, 18, 22].includes(chosen) ? chosen : (config?.beadLimit || 18);
   const qtyZ = Number.isFinite(Number(zodiacQty)) && Number(zodiacQty) > 0
     ? Number(zodiacQty)
     : (config?.zodiacBeadCount || 2);

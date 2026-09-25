@@ -42,6 +42,7 @@ const { seedPlatform } = require('./seedPlatform');
 const { HOME_DEFAULTS } = require('../data/homeContent');
 const { catalogPriceFor } = require('../data/beadPriceSource');
 const { ensureStudioLayers } = require('./ensureStudioLayers');
+const { uploadSeedMedia } = require('./uploadSeedMedia');
 
 const DISCLAIMER =
   'These are traditional and spiritual associations, not medical claims. Kuberstones products are not intended to diagnose, treat, or cure any condition.';
@@ -790,6 +791,10 @@ async function run() {
   });
 
   await ensureStudioLayers();
+
+  console.log('Uploading catalog / purpose / home images to S3…');
+  const mediaResult = await uploadSeedMedia();
+  console.log('Seed media:', mediaResult);
 
   console.log('Seed complete. Catalog, customizer, and store models are filled.');
   console.log(`Admin: ${admin.email} / ${process.env.ADMIN_PASSWORD || 'Admin@123'}`);

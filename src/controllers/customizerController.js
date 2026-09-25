@@ -128,7 +128,7 @@ exports.studioLayerItem = asyncHandler(async (req, res) => {
 });
 
 exports.calibrate = asyncHandler(async (req, res) => {
-  const { intentionId, dateOfBirth, includeZodiac, zodiacQty, charmId, finishKey } = req.body || {};
+  const { intentionId, dateOfBirth, includeZodiac, zodiacQty, charmId, finishKey, beadCount } = req.body || {};
   if (!intentionId) return res.status(400).json({ message: 'Choose an intention first.' });
   if (!dateOfBirth) return res.status(400).json({ message: 'Enter a date of birth.' });
   const intention = await Intention.findById(intentionId).populate('purposeId', 'name slug').lean();
@@ -138,6 +138,7 @@ exports.calibrate = asyncHandler(async (req, res) => {
     dateOfBirth,
     includeZodiac: Boolean(includeZodiac),
     zodiacQty,
+    beadCount,
     charmId,
     finishKey,
   });

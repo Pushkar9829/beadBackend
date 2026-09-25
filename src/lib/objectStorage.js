@@ -97,6 +97,55 @@ async function putFile(file, { folder = 'other' } = {}) {
   return { storage: 'local', key: filename, filename, url: `/uploads/${filename}` };
 }
 
+const MIME_BY_EXT = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.avif': 'image/avif',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+};
+
+/** Stable-key upload for seed / catalog assets (overwrites the same object on re-seed). */
+async function putLocalFile(absPath, { folder = 'other', filename } = {}) {
+  if (!absPath || !fs.existsSync(absPath)) {
+    throw new Error(`Seed media missing: ${absPath || '(empty path)'}`);
+  }
+  const name = filename || path.basename(absPath);
+  const safeFolder = String(folder || 'other').replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'other';
+  const key = `media/${safeFolder}/${name}`;
+  const ext = path.extname(name).toLowerCase();
+  const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
+  const body = fs.readFileSync(absPath);
+
+  if (s3Enabled()) {
+    const params = {
+      Bucket: bucket(),
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+    };
+    if (process.env.S3_ACL) params.ACL = process.env.S3_ACL;
+    await s3Client().send(new PutObjectCommand(params));
+    return { storage: 's3', key, filename: name, url: publicUrl(key), size: body.length, mimeType: contentType };
+  }
+
+  const dest = path.join(uploadDir, name);
+  fs.writeFileSync(dest, body);
+  return {
+    storage: 'local',
+    key: name,
+    filename: name,
+    url: `/uploads/${name}`,
+    size: body.length,
+    mimeType: contentType,
+  };
+}
+
 async function deleteStored({ storage, key, filename, url } = {}) {
   try {
     if (storage === 's3' || (key && String(key).startsWith('media/'))) {
@@ -113,4 +162,4 @@ async function deleteStored({ storage, key, filename, url } = {}) {
   }
 }
 
-module.exports = { s3Enabled, putFile, deleteStored, uploadDir };
+module.exports = { s3Enabled, putFile, putLocalFile, deleteStored, uploadDir, publicUrl, bucket };

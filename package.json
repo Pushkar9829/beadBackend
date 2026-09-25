@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node src/seed/seed.js",
+    "seed:media": "node src/seed/uploadSeedMedia.js",
     "seed:numerology": "node src/seed/runNumerology.js",
     "seed:layers": "node src/seed/ensureLayerBeads.js",
     "seed:studio-layers": "node src/seed/ensureStudioLayers.js"
