@@ -78,7 +78,14 @@ exports.config = asyncHandler(async (_req, res) => {
 });
 
 exports.beads = asyncHandler(async (_req, res) => {
-  const beads = await Bead.find({ isActive: true })
+  const [zodiacIds, mulankIds] = await Promise.all([
+    ZodiacBead.find({ isActive: true }).distinct('beadId'),
+    MulankCrystal.find({ isActive: true }).distinct('beadId'),
+  ]);
+  const mappedIds = [...zodiacIds, ...mulankIds].filter(Boolean);
+  const beads = await Bead.find({
+    $or: [{ isActive: true }, { _id: { $in: mappedIds } }],
+  })
     .select('name slug image colorHex pricePerBead powerUse shortDescriptor')
     .sort({ name: 1 })
     .lean();
