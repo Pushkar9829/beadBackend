@@ -11,7 +11,6 @@ const Product = require('../models/Product');
 const { mulankFromDate } = require('../services/numerologyService');
 const { getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
 const { getRecommendedBeads } = require('../services/recommendationService');
-const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
 const {
   asyncHandler,
@@ -29,13 +28,11 @@ const UPDATE_OPTS = { returnDocument: 'after', runValidators: true };
 const UPSERT_OPTS = { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true, runValidators: true };
 const isObjectId = (value) =>
   (typeof value === 'string' || value instanceof mongoose.Types.ObjectId) && mongoose.Types.ObjectId.isValid(value);
-const MAX_QUOTE_LINES = 200;
-const MAX_QUOTE_QTY = 1000;
 
 function badId(res, label = 'record') {
   return res.status(400).json({ message: `Invalid ${label} id.` });
 }
-const { withStudioDefaults, activeStudioModes } = require('../data/studioConfigDefaults');
+const { withStudioDefaults } = require('../data/studioConfigDefaults');
 const studioLayers = require('../services/studioLayerService');
 const StudioLayer = require('../models/StudioLayer');
 const { KINDS: LAYER_KINDS } = StudioLayer;
@@ -92,11 +89,6 @@ exports.beads = asyncHandler(async (_req, res) => {
   res.json({ beads });
 });
 
-exports.studioModes = asyncHandler(async (_req, res) => {
-  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
-  res.json({ modes: activeStudioModes(config) });
-});
-
 exports.studioLayerList = asyncHandler(async (req, res) => {
   const kind = String(req.params.kind || '');
   if (kind === 'purpose') {
@@ -106,32 +98,6 @@ exports.studioLayerList = asyncHandler(async (req, res) => {
   const data = await studioLayers.listLayers(kind);
   if (!data) return res.status(404).json({ message: 'That customisation path was not found.' });
   res.json(data);
-});
-
-exports.studioLayerItem = asyncHandler(async (req, res) => {
-  const kind = String(req.params.kind || '');
-  const slug = String(req.params.slug || '');
-  if (kind === 'numerology' && (req.query.dateOfBirth || req.query.mulank)) {
-    let mulank = Number(req.query.mulank);
-    let bhagyank = Number(req.query.bhagyank);
-    if (req.query.dateOfBirth) {
-      const nums = studioLayers.numerologyFromDate(req.query.dateOfBirth);
-      mulank = nums.mulank;
-      bhagyank = nums.bhagyank;
-    }
-    const mItem = await studioLayers.getLayerItem('numerology', String(mulank || slug));
-    const bItem = await studioLayers.getLayerItem('numerology', String(bhagyank || mulank || slug));
-    if (!mItem) return res.status(404).json({ message: 'Numerology number not found.' });
-    return res.json({
-      kind: 'numerology',
-      dateOfBirth: req.query.dateOfBirth || '',
-      mulank: mItem,
-      bhagyank: bItem,
-    });
-  }
-  const item = await studioLayers.getLayerItem(kind, slug);
-  if (!item) return res.status(404).json({ message: 'That option was not found.' });
-  res.json({ kind, item });
 });
 
 const FINDER_STONE_LIMIT = 3;
@@ -250,60 +216,6 @@ exports.calibrate = asyncHandler(async (req, res) => {
     finishKey,
   });
   res.json({ intention, purpose: intention.purposeId, ...result });
-});
-
-exports.quote = asyncHandler(async (req, res) => {
-  // Public endpoint: validate everything; client-supplied addOns are never accepted.
-  const { beads = [], charmId, finishKey, czStyle } = req.body || {};
-  if (!Array.isArray(beads)) return res.status(400).json({ message: 'beads must be an array.' });
-  if (beads.length > MAX_QUOTE_LINES) {
-    return res.status(400).json({ message: `Too many bead lines (max ${MAX_QUOTE_LINES}).` });
-  }
-  const lines = [];
-  for (const row of beads) {
-    if (!row || typeof row !== 'object' || !isObjectId(row.beadId)) {
-      return res.status(400).json({ message: 'Each bead needs a valid beadId.' });
-    }
-    const quantity = Number(row.quantity);
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUOTE_QTY) {
-      return res.status(400).json({ message: 'Each bead quantity must be a positive whole number.' });
-    }
-    lines.push({ beadId: String(row.beadId), quantity });
-  }
-  if (charmId != null && charmId !== '' && !isObjectId(charmId)) {
-    return res.status(400).json({ message: 'Choose a valid charm.' });
-  }
-  if (czStyle != null && typeof czStyle !== 'string') {
-    return res.status(400).json({ message: 'Invalid CZ style.' });
-  }
-
-  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
-  const charm = charmId ? await Charm.findById(charmId).lean() : await Charm.findOne({ isActive: true }).lean();
-  const finish =
-    charm?.finishes?.find((f) => typeof finishKey === 'string' && f.key === finishKey) || charm?.finishes?.[0];
-  const ids = [...new Set(lines.map((b) => b.beadId))];
-  const beadDocs = ids.length ? await Bead.find({ _id: { $in: ids } }).lean() : [];
-  const byId = Object.fromEntries(beadDocs.map((b) => [String(b._id), b]));
-  if (ids.some((id) => !byId[id])) {
-    return res.status(400).json({ message: 'One or more beads were not found.' });
-  }
-  const priced = lines.map((b) => ({
-    ...b,
-    name: byId[b.beadId].name,
-    pricePerBead: byId[b.beadId].pricePerBead || 0,
-  }));
-  const quote = calculateCustomTotal({
-    beads: priced,
-    packaging: config.packaging,
-    packagingLabels: config.packagingLabels,
-    czOptions: config.czOptions,
-    czStyle: czStyle || config.defaultCzStyle,
-    addOns: 0,
-    beadLimit: config.beadLimit,
-    minBeads: config.minBeads,
-    finish,
-  });
-  res.json({ quote, finish, charm, config });
 });
 
 exports.adminPurposes = asyncHandler(async (_req, res) => {

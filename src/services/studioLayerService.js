@@ -1,7 +1,6 @@
 const Bead = require('../models/Bead');
 const StudioLayer = require('../models/StudioLayer');
 const { MODES } = require('../data/studioLayers');
-const { bhagyankFromDate, mulankFromDate } = require('./numerologyService');
 
 const ALIASES = {
   obsidian: ['obsidian', 'black obsidian', 'obsidian / black obsidian'],
@@ -124,31 +123,7 @@ async function listLayers(kind) {
   return { kind, label: mode.label, path: mode.path, items };
 }
 
-async function getLayerItem(kind, slug) {
-  const raw = String(slug || '').trim();
-  const asNumber = Number(raw);
-  const fromDb = await StudioLayer.findOne({
-    kind,
-    $or: [
-      { slug: raw.toLowerCase() },
-      ...(kind === 'numerology' && Number.isFinite(asNumber) ? [{ number: asNumber }] : []),
-    ],
-  }).lean();
-  if (!fromDb || fromDb.isActive === false) return null;
-  const beads = await loadBeads();
-  return decorateItem(kind, fromDb, beads);
-}
-
-function numerologyFromDate(iso) {
-  return {
-    mulank: mulankFromDate(iso),
-    bhagyank: bhagyankFromDate(iso),
-  };
-}
-
 module.exports = {
   listLayers,
-  getLayerItem,
-  numerologyFromDate,
   matchBead,
 };

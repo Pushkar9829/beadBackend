@@ -111,6 +111,5 @@ router.post('/returns/:id/pickup', platform.bookReturnPickup);
 router.get('/ithink/warehouses', platform.ithinkWarehouses);
 router.get('/webhooks', require('../controllers/webhookController').adminEvents);
 router.get('/webhooks/urls', require('../controllers/webhookController').list);
-router.post('/shipping/sync', require('../controllers/webhookController').ithinkSync);
 
 module.exports = router;

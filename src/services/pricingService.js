@@ -53,13 +53,6 @@ function parseWristInches(size) {
   return Number.isFinite(n) && n > 0 ? n : 6.5;
 }
 
-function strandBeadCount(wristSize, beadSizeMm, { min = 8, max = 32 } = {}) {
-  const inches = parseWristInches(wristSize);
-  const mm = Number(beadSizeMm) || 8;
-  const count = Math.round((inches * 25.4) / mm);
-  return Math.max(min, Math.min(max, count));
-}
-
 function calculateCustomTotal({
   beads = [],
   packaging,
@@ -258,6 +251,5 @@ module.exports = {
   mergePackaging,
   packagingBreakdown,
   parseWristInches,
-  strandBeadCount,
   calculateCustomTotal,
 };

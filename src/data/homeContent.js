@@ -61,16 +61,6 @@ const HOME_DEFAULTS = {
     showSummary: true,
     faqTitle: 'Before you buy',
   },
-  marquee: [
-    'Energy',
-    'Abundance',
-    'Wellness',
-    'Crystals',
-    'Rudraksha',
-    'Gemstones',
-    'Customization',
-    'Handmade',
-  ],
   houses: {
     eyebrow: 'The atelier',
     title: 'Three houses',

@@ -64,7 +64,6 @@ const siteContentSchema = new mongoose.Schema(
       hotspot: { type: mongoose.Schema.Types.Mixed },
       slides: { type: [mongoose.Schema.Types.Mixed], default: undefined },
     },
-    marquee: [String],
     houses: {
       eyebrow: String,
       title: String,

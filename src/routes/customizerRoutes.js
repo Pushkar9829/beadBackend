@@ -14,11 +14,8 @@ router.get('/intentions/:intentionId/beads', ctrl.recommendedBeads);
 router.get('/charms', ctrl.charms);
 router.get('/config', ctrl.config);
 router.get('/beads', ctrl.beads);
-router.get('/layers', ctrl.studioModes);
 router.get('/layers/:kind', ctrl.studioLayerList);
-router.get('/layers/:kind/:slug', ctrl.studioLayerItem);
 router.post('/calibrate', quoteLimit, ctrl.calibrate);
-router.post('/quote', quoteLimit, ctrl.quote);
 router.get('/finder', finderLimit, ctrl.finder);
 
 router.get('/admin/purposes', requireAuth, requireAdmin, ctrl.adminPurposes);
