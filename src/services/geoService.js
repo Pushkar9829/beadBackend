@@ -27,9 +27,12 @@ function mapNominatim(json) {
 }
 
 async function reverse(lat, lng) {
-  const latitude = Number(lat);
-  const longitude = Number(lng);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+  const latitude = typeof lat === 'string' || typeof lat === 'number' ? Number(lat) : NaN;
+  const longitude = typeof lng === 'string' || typeof lng === 'number' ? Number(lng) : NaN;
+  if (
+    lat === '' || lng === '' || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+    || Math.abs(latitude) > 90 || Math.abs(longitude) > 180
+  ) {
     throw fail('A valid latitude and longitude are required.');
   }
   const url = new URL('https://nominatim.openstreetmap.org/reverse');
@@ -38,15 +41,23 @@ async function reverse(lat, lng) {
   url.searchParams.set('lon', String(longitude));
   url.searchParams.set('addressdetails', '1');
   url.searchParams.set('zoom', '18');
-  const res = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'KuberstonesStore/1.0 (hello@kuberstones.com)',
-    },
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) throw fail('Could not read this location. Try again or enter the address.', 502);
-  const json = await res.json();
+  let json;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        accept: 'application/json',
+        // Nominatim usage policy requires an identifying User-Agent with contact details.
+        'user-agent': process.env.GEO_USER_AGENT || 'KuberstonesStore/1.0 (hello@kuberstones.com)',
+        'accept-language': 'en',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw fail('Could not read this location. Try again or enter the address.', 502);
+    json = await res.json();
+  } catch (err) {
+    if (err.status) throw err;
+    throw fail('Location lookup timed out. Try again or enter the address.', 502);
+  }
   const address = mapNominatim(json);
   if (!address.line1 && !address.city) {
     throw fail('No street address was found for this location. Please enter it manually.');

@@ -1,6 +1,9 @@
 const express = require('express');
 const ctrl = require('../controllers/customizerController');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimit');
+
+const quoteLimit = rateLimit({ windowMs: 60 * 1000, max: 60 });
 
 const router = express.Router();
 
@@ -13,8 +16,8 @@ router.get('/beads', ctrl.beads);
 router.get('/layers', ctrl.studioModes);
 router.get('/layers/:kind', ctrl.studioLayerList);
 router.get('/layers/:kind/:slug', ctrl.studioLayerItem);
-router.post('/calibrate', ctrl.calibrate);
-router.post('/quote', ctrl.quote);
+router.post('/calibrate', quoteLimit, ctrl.calibrate);
+router.post('/quote', quoteLimit, ctrl.quote);
 
 router.get('/admin/purposes', requireAuth, requireAdmin, ctrl.adminPurposes);
 router.post('/admin/purposes', requireAuth, requireAdmin, ctrl.adminSavePurpose);

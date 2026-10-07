@@ -8,7 +8,10 @@ const Coupon = require('../models/Coupon');
 const Offer = require('../models/Offer');
 const StockAdjustment = require('../models/StockAdjustment');
 const StoreSettings = require('../models/StoreSettings');
-const { asyncHandler, slugifyName, escapeRegex, cleanBody } = require('../utils/asyncHandler');
+const mongoose = require('mongoose');
+const { asyncHandler, slugifyName, escapeRegex, cleanBody, toStr, UPDATE_OPTS } = require('../utils/asyncHandler');
+const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
+const { parseRange } = require('../services/analyticsService');
 
 const PAID = ['paid', 'processing', 'packed', 'shipped', 'delivered'];
 
@@ -16,13 +19,6 @@ function startOfDay(d = new Date()) {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
-}
-
-function rangeStart(range) {
-  const now = new Date();
-  if (range === 'today') return startOfDay(now);
-  const days = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 }[range] || 30;
-  return new Date(now.getTime() - days * 86400000);
 }
 
 function daysBetween(from, to) {
@@ -37,14 +33,8 @@ function daysBetween(from, to) {
 }
 
 exports.dashboard = asyncHandler(async (req, res) => {
-  const range = req.query.range || '30d';
-  let from = rangeStart(range);
-  let to = new Date();
-  if (req.query.from && req.query.to) {
-    from = new Date(req.query.from);
-    to = new Date(req.query.to);
-    to.setHours(23, 59, 59, 999);
-  }
+  // Validates from/to (400 on invalid) and clamps custom ranges to 366 days.
+  const { from, to, range } = parseRange(req.query);
   const today = startOfDay();
   const paidMatch = { status: { $in: PAID } };
 
@@ -143,7 +133,7 @@ exports.dashboard = asyncHandler(async (req, res) => {
   const topProducts = [...productSales.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 8);
 
   res.json({
-    range: req.query.from ? 'custom' : range,
+    range,
     from,
     to,
     kpis: {
@@ -172,65 +162,116 @@ exports.dashboard = asyncHandler(async (req, res) => {
   });
 });
 
+const DAY_MS = 86400000;
+
+function customerSegment(u, s, now) {
+  const orders = s?.orders || 0;
+  const spent = s?.spent || 0;
+  const lastOrder = s?.lastOrder || null;
+  let segment = 'new';
+  if (orders > 1) segment = 'repeat';
+  if (spent >= 5000) segment = 'vip';
+  if (!lastOrder && now - new Date(u.createdAt).getTime() > 30 * DAY_MS) segment = 'inactive';
+  if (lastOrder && now - new Date(lastOrder).getTime() > 90 * DAY_MS) segment = 'inactive';
+  return { ...u, orders, spent, aov: orders ? Math.round(spent / orders) : 0, lastOrder, segment };
+}
+
 exports.customers = asyncHandler(async (req, res) => {
-  const group = req.query.group || 'all';
-  const q = String(req.query.q || '').trim();
+  const group = toStr(req.query.group, 20) || 'all';
+  const q = toStr(req.query.q, 100);
+  // Unpaginated callers (current admin UI) get a generous but bounded list.
+  const { page, limit, skip } = parsePage(req, req.query.page ? 100 : 2000, 2000);
+  const now = Date.now();
   const filter = { role: 'customer' };
   if (q) {
     const rx = new RegExp(escapeRegex(q), 'i');
     filter.$or = [{ name: rx }, { email: rx }, { phone: rx }];
   }
-  const users = await User.find(filter).select('-passwordHash').sort({ createdAt: -1 }).lean();
-  const stats = await Order.aggregate([
-    { $match: { userId: { $ne: null } } },
-    {
-      $group: {
-        _id: '$userId',
-        orders: { $sum: 1 },
-        spent: { $sum: '$total' },
-        lastOrder: { $max: '$createdAt' },
+  if (group === 'new') filter.createdAt = { $gte: new Date(now - 30 * DAY_MS) };
+
+  let users;
+  let total;
+  let statsById;
+  if (['repeat', 'vip', 'inactive'].includes(group)) {
+    // Segment filters depend on order stats, so compute them per user inside the DB.
+    const segmentMatch = {
+      repeat: { 'stats.orders': { $gt: 1 } },
+      vip: { 'stats.spent': { $gte: 5000 } },
+      inactive: {
+        $or: [
+          { 'stats.lastOrder': null, createdAt: { $lt: new Date(now - 30 * DAY_MS) } },
+          { 'stats.lastOrder': { $lt: new Date(now - 90 * DAY_MS) } },
+        ],
       },
-    },
-  ]);
-  const byUser = new Map(stats.map((s) => [String(s._id), s]));
-  const now = Date.now();
-  const day = 86400000;
-  let customers = users.map((u) => {
-    const s = byUser.get(String(u._id));
-    const orders = s?.orders || 0;
-    const spent = s?.spent || 0;
-    const lastOrder = s?.lastOrder || null;
-    let segment = 'new';
-    if (orders > 1) segment = 'repeat';
-    if (spent >= 5000) segment = 'vip';
-    if (!lastOrder && now - new Date(u.createdAt).getTime() > 30 * day) segment = 'inactive';
-    if (lastOrder && now - new Date(lastOrder).getTime() > 90 * day) segment = 'inactive';
-    return { ...u, orders, spent, aov: orders ? Math.round(spent / orders) : 0, lastOrder, segment };
-  });
-  if (group === 'new') customers = customers.filter((c) => now - new Date(c.createdAt).getTime() <= 30 * day);
-  if (group === 'repeat') customers = customers.filter((c) => c.orders > 1);
-  if (group === 'vip') customers = customers.filter((c) => c.spent >= 5000);
-  if (group === 'inactive') customers = customers.filter((c) => c.segment === 'inactive');
-  res.json({ customers });
+    }[group];
+    const [result] = await User.aggregate([
+      { $match: filter },
+      { $project: { passwordHash: 0, tokenVersion: 0 } },
+      {
+        $lookup: {
+          from: Order.collection.name,
+          let: { uid: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$userId', '$$uid'] } } },
+            { $group: { _id: null, orders: { $sum: 1 }, spent: { $sum: '$total' }, lastOrder: { $max: '$createdAt' } } },
+          ],
+          as: 'statsArr',
+        },
+      },
+      {
+        $addFields: {
+          stats: {
+            $ifNull: [{ $arrayElemAt: ['$statsArr', 0] }, { orders: 0, spent: 0, lastOrder: null }],
+          },
+        },
+      },
+      { $match: segmentMatch },
+      { $sort: { createdAt: -1 } },
+      {
+        $facet: {
+          rows: [{ $skip: skip }, { $limit: limit }, { $project: { statsArr: 0 } }],
+          total: [{ $count: 'n' }],
+        },
+      },
+    ]);
+    const rows = result?.rows || [];
+    total = result?.total?.[0]?.n || 0;
+    statsById = new Map(rows.map((r) => [String(r._id), r.stats]));
+    users = rows.map(({ stats, ...u }) => u);
+  } else {
+    [users, total] = await Promise.all([
+      User.find(filter).select('-passwordHash -tokenVersion').sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      User.countDocuments(filter),
+    ]);
+    const stats = users.length
+      ? await Order.aggregate([
+          { $match: { userId: { $in: users.map((u) => u._id) } } },
+          { $group: { _id: '$userId', orders: { $sum: 1 }, spent: { $sum: '$total' }, lastOrder: { $max: '$createdAt' } } },
+        ])
+      : [];
+    statsById = new Map(stats.map((st) => [String(st._id), st]));
+  }
+  const customers = users.map((u) => customerSegment(u, statsById.get(String(u._id)), now));
+  res.json({ customers, pagination: pageMeta(total, page, limit) });
 });
 
-exports.abandonedCarts = asyncHandler(async (_req, res) => {
-  const carts = await Cart.find({ 'items.0': { $exists: true } })
-    .populate('userId', 'name email phone')
-    .sort({ updatedAt: -1 })
-    .lean();
-  const cutoff = Date.now() - 3600000;
-  const rows = carts
-    .filter((c) => new Date(c.updatedAt).getTime() < cutoff)
-    .map((c) => ({
-      _id: c._id,
-      user: c.userId,
-      items: c.items.length,
-      total: c.items.reduce((s, i) => s + (i.lineTotal || 0), 0),
-      updatedAt: c.updatedAt,
-      remindedAt: c.remindedAt,
-    }));
-  res.json({ carts: rows });
+exports.abandonedCarts = asyncHandler(async (req, res) => {
+  // Unpaginated callers (current admin UI) get a generous but bounded list.
+  const { page, limit, skip } = parsePage(req, req.query.page ? 100 : 2000, 2000);
+  const filter = { 'items.0': { $exists: true }, updatedAt: { $lt: new Date(Date.now() - 3600000) } };
+  const [carts, total] = await Promise.all([
+    Cart.find(filter).populate('userId', 'name email phone').sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
+    Cart.countDocuments(filter),
+  ]);
+  const rows = carts.map((c) => ({
+    _id: c._id,
+    user: c.userId,
+    items: c.items.length,
+    total: c.items.reduce((sum, i) => sum + (i.lineTotal || 0), 0),
+    updatedAt: c.updatedAt,
+    remindedAt: c.remindedAt,
+  }));
+  res.json({ carts: rows, pagination: pageMeta(total, page, limit) });
 });
 
 function couponStatus(c, now = new Date()) {
@@ -241,8 +282,7 @@ function couponStatus(c, now = new Date()) {
 }
 
 exports.listCollections = asyncHandler(async (_req, res) => {
-  const { ensureDefaultCollections } = require('../services/collectionService');
-  await ensureDefaultCollections();
+  // Default collections are seeded at startup (collectionService.ensureDefaultCollections), not on read.
   const collections = await Collection.find().sort({ sortOrder: 1, name: 1 }).lean();
   res.json({ collections });
 });
@@ -250,8 +290,11 @@ exports.listCollections = asyncHandler(async (_req, res) => {
 exports.saveCollection = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
+  if (data.ruleConfig && data.ruleConfig.limit != null) {
+    data.ruleConfig.limit = Math.min(100, Math.max(1, Math.floor(Number(data.ruleConfig.limit)) || 24));
+  }
   const collection = req.params.id
-    ? await Collection.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await Collection.findByIdAndUpdate(req.params.id, { $set: data }, UPDATE_OPTS)
     : await Collection.create(data);
   if (!collection) return res.status(404).json({ message: 'Collection not found.' });
   res.json({ collection });
@@ -264,16 +307,15 @@ exports.removeCollection = asyncHandler(async (req, res) => {
 });
 
 exports.listCoupons = asyncHandler(async (_req, res) => {
-  const coupons = await Coupon.find().sort({ createdAt: -1 }).lean();
+  const coupons = await Coupon.find().sort({ createdAt: -1 }).limit(2000).lean();
   res.json({ coupons: coupons.map((c) => ({ ...c, status: couponStatus(c) })) });
 });
 
 exports.saveCoupon = asyncHandler(async (req, res) => {
-  const data = cleanBody(req.body);
-  delete data.status;
-  if (data.code) data.code = String(data.code).toUpperCase().trim();
+  const data = cleanBody(req.body, { omit: ['status', 'usedCount', 'revenueGenerated', 'discountCost'] });
+  if (data.code !== undefined) data.code = toStr(data.code, 40).toUpperCase();
   const coupon = req.params.id
-    ? await Coupon.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await Coupon.findByIdAndUpdate(req.params.id, { $set: data }, UPDATE_OPTS)
     : await Coupon.create(data);
   if (!coupon) return res.status(404).json({ message: 'Coupon not found.' });
   res.json({ coupon });
@@ -296,15 +338,23 @@ exports.couponUsage = asyncHandler(async (req, res) => {
 });
 
 exports.listOffers = asyncHandler(async (_req, res) => {
-  const offers = await Offer.find().populate('categoryId', 'name').sort({ createdAt: -1 }).lean();
+  const offers = await Offer.find().populate('categoryId', 'name').sort({ createdAt: -1 }).limit(2000).lean();
   res.json({ offers });
 });
 
 exports.saveOffer = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
-  if (!data.categoryId) data.categoryId = undefined;
+  const unset = {};
+  if (!data.categoryId) {
+    delete data.categoryId;
+    if (req.params.id) unset.categoryId = 1;
+  }
   const offer = req.params.id
-    ? await Offer.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await Offer.findByIdAndUpdate(
+        req.params.id,
+        Object.keys(unset).length ? { $set: data, $unset: unset } : { $set: data },
+        UPDATE_OPTS
+      )
     : await Offer.create(data);
   if (!offer) return res.status(404).json({ message: 'Offer not found.' });
   res.json({ offer });
@@ -324,52 +374,61 @@ function tagStock(row, defaultLimit) {
 }
 
 exports.inventory = asyncHandler(async (req, res) => {
-  const view = req.query.view || 'all';
-  const kind = req.query.kind || 'product';
-  const q = String(req.query.q || '').trim();
-  const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
+  const view = toStr(req.query.view, 10) || 'all';
+  const kind = req.query.kind === 'bead' ? 'bead' : 'product';
+  const q = toStr(req.query.q, 100);
   const { page, limit, skip } = parsePage(req, 50);
+  const defaultLimit = kind === 'bead' ? 10 : 5;
   const filter = {};
   if (q) {
     const rx = new RegExp(escapeRegex(q), 'i');
     filter.$or = kind === 'bead' ? [{ name: rx }, { slug: rx }] : [{ name: rx }, { sku: rx }];
   }
-  if (req.query.categoryId) filter.categoryId = req.query.categoryId;
+  if (req.query.categoryId && mongoose.isValidObjectId(req.query.categoryId)) filter.categoryId = req.query.categoryId;
+  if (view === 'out') filter.stock = { $lte: 0 };
+  if (view === 'low') {
+    filter.$expr = {
+      $and: [{ $gt: ['$stock', 0] }, { $lte: ['$stock', { $ifNull: ['$lowStockLimit', defaultLimit] }] }],
+    };
+  }
   const Model = kind === 'bead' ? Bead : Product;
   const sort = parseSort(req, ['name', 'stock', 'updatedAt', 'createdAt'], 'name');
-  let query = Model.find(filter).sort(sort);
+  let query = Model.find(filter).sort(sort).skip(skip).limit(limit);
   if (kind === 'product') query = query.populate('categoryId', 'name');
-  let rows = await query.lean();
-  rows = rows.map((r) => tagStock(r, kind === 'bead' ? 10 : 5));
-  if (view === 'low') rows = rows.filter((p) => p.stockStatus === 'low');
-  if (view === 'out') rows = rows.filter((p) => p.stockStatus === 'out');
-  const total = rows.length;
-  const sliced = rows.slice(skip, skip + limit);
+  const [rows, total] = await Promise.all([query.lean(), Model.countDocuments(filter)]);
+  const sliced = rows.map((r) => tagStock(r, defaultLimit));
   res.json({ products: sliced, items: sliced, kind, pagination: pageMeta(total, page, limit) });
 });
 
 exports.adjustStock = asyncHandler(async (req, res) => {
-  const { productId, beadId, delta, reason } = req.body;
-  const amount = Number(delta);
+  const { productId, beadId, delta, reason } = req.body || {};
+  const amount = typeof delta === 'number' || typeof delta === 'string' ? Number(delta) : NaN;
   const kind = beadId && !productId ? 'bead' : 'product';
-  if ((!productId && !beadId) || !Number.isFinite(amount) || amount === 0) {
-    return res.status(400).json({ message: 'A product or bead and a non-zero quantity are required.' });
+  const id = kind === 'bead' ? beadId : productId;
+  if (!id || !mongoose.isValidObjectId(id) || !Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000000) {
+    return res.status(400).json({ message: 'A product or bead and a non-zero whole-number quantity are required.' });
   }
-  if (!reason || !String(reason).trim()) {
+  const reasonText = toStr(reason, 500);
+  if (!reasonText) {
     return res.status(400).json({ message: 'A reason is required.' });
   }
-  const doc = kind === 'bead' ? await Bead.findById(beadId) : await Product.findById(productId);
-  if (!doc) return res.status(404).json({ message: kind === 'bead' ? 'Bead not found.' : 'Product not found.' });
-  const previousStock = doc.stock || 0;
+  const Model = kind === 'bead' ? Bead : Product;
+  // Atomic, clamped at zero: stock = max(0, stock + amount). Returns the pre-update document.
+  const before = await Model.findOneAndUpdate(
+    { _id: id },
+    [{ $set: { stock: { $max: [0, { $add: [{ $ifNull: ['$stock', 0] }, amount] }] } } }],
+    { returnDocument: 'before', updatePipeline: true }
+  ).lean();
+  if (!before) return res.status(404).json({ message: kind === 'bead' ? 'Bead not found.' : 'Product not found.' });
+  const previousStock = before.stock || 0;
   const nextStock = Math.max(0, previousStock + amount);
-  doc.stock = nextStock;
-  await doc.save();
+  const doc = { ...before, stock: nextStock };
   const adjustment = await StockAdjustment.create({
     kind,
-    productId: kind === 'product' ? productId : undefined,
-    beadId: kind === 'bead' ? beadId : undefined,
+    productId: kind === 'product' ? id : undefined,
+    beadId: kind === 'bead' ? id : undefined,
     delta: amount,
-    reason: String(reason).trim(),
+    reason: reasonText,
     previousStock,
     nextStock,
     userId: req.user?._id,
@@ -396,9 +455,9 @@ exports.adjustStock = asyncHandler(async (req, res) => {
 
 exports.stockHistory = asyncHandler(async (req, res) => {
   const filter = {};
-  if (req.query.productId) filter.productId = req.query.productId;
-  if (req.query.beadId) filter.beadId = req.query.beadId;
-  if (req.query.kind) filter.kind = req.query.kind;
+  if (req.query.productId && mongoose.isValidObjectId(req.query.productId)) filter.productId = req.query.productId;
+  if (req.query.beadId && mongoose.isValidObjectId(req.query.beadId)) filter.beadId = req.query.beadId;
+  if (req.query.kind === 'product' || req.query.kind === 'bead') filter.kind = req.query.kind;
   const history = await StockAdjustment.find(filter)
     .populate('productId', 'name sku')
     .populate('beadId', 'name slug')
@@ -450,77 +509,136 @@ const SETTINGS_DEFAULTS = {
   seo: { title: 'Kuberstones', description: '', keywords: '', ogImage: '', noIndex: false },
 };
 
-exports.getSettings = asyncHandler(async (_req, res) => {
-  let settings = await StoreSettings.findOne({ key: 'store' }).lean();
-  if (!settings) settings = SETTINGS_DEFAULTS;
-  const merged = {
+// Credential / integration fields. Only role 'admin' may change these; secrets are never returned.
+const SECRET_FIELDS = {
+  payment: ['cashfreeSecret'],
+  shipping: ['ithinkSecretKey', 'ithinkWebhookSecret', 'ithinkAccessToken'],
+};
+const CREDENTIAL_FIELDS = {
+  payment: ['cashfreeEnabled', 'cashfreeAppId', 'cashfreeSecret', 'cashfreeEnv', 'gatewayKeyId'],
+  shipping: [
+    'ithinkEnabled',
+    'ithinkEnv',
+    'ithinkAccessToken',
+    'ithinkSecretKey',
+    'ithinkPickupAddressId',
+    'ithinkReturnAddressId',
+    'ithinkLogistics',
+    'ithinkServiceType',
+    'ithinkWebhookSecret',
+  ],
+};
+// Derived flags the UI may echo back; never persisted.
+const DERIVED_FLAGS = {
+  payment: ['cashfreeSecretSet'],
+  shipping: ['ithinkSecretSet', 'ithinkWebhookSecretSet', 'ithinkAccessTokenSet', 'hasIthinkAccessToken'],
+};
+
+function mergeSettings(settings) {
+  const src = settings || SETTINGS_DEFAULTS;
+  return {
     ...SETTINGS_DEFAULTS,
-    ...settings,
-    payment: { ...SETTINGS_DEFAULTS.payment, ...settings.payment },
-    shipping: { ...SETTINGS_DEFAULTS.shipping, ...settings.shipping },
-    tax: { ...SETTINGS_DEFAULTS.tax, ...settings.tax },
-    notifications: { ...SETTINGS_DEFAULTS.notifications, ...settings.notifications },
-    seo: { ...SETTINGS_DEFAULTS.seo, ...settings.seo },
+    ...src,
+    payment: { ...SETTINGS_DEFAULTS.payment, ...src.payment },
+    shipping: { ...SETTINGS_DEFAULTS.shipping, ...src.shipping },
+    tax: { ...SETTINGS_DEFAULTS.tax, ...src.tax },
+    notifications: { ...SETTINGS_DEFAULTS.notifications, ...src.notifications },
+    seo: { ...SETTINGS_DEFAULTS.seo, ...src.seo },
   };
-  const secretSet = Boolean(merged.payment.cashfreeSecret || process.env.CASHFREE_SECRET_KEY);
+}
+
+/** Values shown in the admin form (env fallbacks applied) — secrets not yet masked. */
+function displaySettings(stored) {
+  const merged = mergeSettings(stored);
   merged.payment = {
     ...merged.payment,
-    cashfreeSecret: '',
-    cashfreeSecretSet: secretSet,
     cashfreeAppId: merged.payment.cashfreeAppId || process.env.CASHFREE_APP_ID || '',
     cashfreeEnv: merged.payment.cashfreeEnv || process.env.CASHFREE_ENV || 'sandbox',
   };
-  const ithinkSecretSet = Boolean(merged.shipping.ithinkSecretKey || process.env.ITHINK_SECRET_KEY);
-  const ithinkWebhookSecretSet = Boolean(merged.shipping.ithinkWebhookSecret || process.env.ITHINK_WEBHOOK_SECRET);
   merged.shipping = {
     ...merged.shipping,
-    ithinkSecretKey: '',
-    ithinkSecretSet,
-    ithinkWebhookSecret: '',
-    ithinkWebhookSecretSet,
-    ithinkAccessToken: merged.shipping.ithinkAccessToken || process.env.ITHINK_ACCESS_TOKEN || '',
     ithinkEnv: merged.shipping.ithinkEnv || process.env.ITHINK_ENV || 'production',
     ithinkPickupAddressId: merged.shipping.ithinkPickupAddressId || process.env.ITHINK_PICKUP_ADDRESS_ID || '',
     ithinkReturnAddressId: merged.shipping.ithinkReturnAddressId || process.env.ITHINK_RETURN_ADDRESS_ID || '',
     ithinkLogistics: merged.shipping.ithinkLogistics || process.env.ITHINK_LOGISTICS || 'delhivery',
   };
-  res.json({ settings: merged });
+  return merged;
+}
+
+/** Strips every secret from a settings object, replacing it with "is set" booleans. */
+function maskSettings(settings) {
+  const out = { ...settings, payment: { ...(settings.payment || {}) }, shipping: { ...(settings.shipping || {}) } };
+  out.payment.cashfreeSecretSet = Boolean(out.payment.cashfreeSecret || process.env.CASHFREE_SECRET_KEY);
+  out.payment.cashfreeSecret = '';
+  out.shipping.ithinkSecretSet = Boolean(out.shipping.ithinkSecretKey || process.env.ITHINK_SECRET_KEY);
+  out.shipping.ithinkWebhookSecretSet = Boolean(out.shipping.ithinkWebhookSecret || process.env.ITHINK_WEBHOOK_SECRET);
+  const tokenSet = Boolean(out.shipping.ithinkAccessToken || process.env.ITHINK_ACCESS_TOKEN);
+  out.shipping.ithinkAccessTokenSet = tokenSet;
+  out.shipping.hasIthinkAccessToken = tokenSet;
+  out.shipping.ithinkSecretKey = '';
+  out.shipping.ithinkWebhookSecret = '';
+  out.shipping.ithinkAccessToken = '';
+  return out;
+}
+
+function isBlankOrMasked(value) {
+  if (value == null) return true;
+  if (typeof value !== 'string') return true;
+  const v = value.trim();
+  return !v || /^[*•●·xX]+$/.test(v) || /^\*{2,}.{0,6}$/.test(v);
+}
+
+exports.getSettings = asyncHandler(async (_req, res) => {
+  const stored = await StoreSettings.findOne({ key: 'store' }).lean();
+  res.json({ settings: maskSettings(displaySettings(stored)) });
 });
 
 exports.saveSettings = asyncHandler(async (req, res) => {
   const incoming = cleanBody(req.body);
   const current = await StoreSettings.findOne({ key: 'store' }).lean();
-  const payment = { ...(current?.payment || {}), ...(incoming.payment || {}) };
-  if (!incoming.payment?.cashfreeSecret) {
-    payment.cashfreeSecret = current?.payment?.cashfreeSecret || '';
+  const shown = displaySettings(current);
+  const isAdmin = req.user?.role === 'admin';
+
+  for (const section of ['payment', 'shipping']) {
+    const sent = incoming[section] && typeof incoming[section] === 'object' && !Array.isArray(incoming[section])
+      ? { ...incoming[section] }
+      : {};
+    for (const flag of DERIVED_FLAGS[section]) delete sent[flag];
+    for (const field of CREDENTIAL_FIELDS[section]) {
+      if (!(field in sent)) continue;
+      const isSecret = SECRET_FIELDS[section].includes(field);
+      if (isSecret) {
+        // Never overwrite a stored secret with an empty / masked placeholder.
+        if (isBlankOrMasked(sent[field])) {
+          delete sent[field];
+          continue;
+        }
+        sent[field] = String(sent[field]).trim().slice(0, 500);
+        if (!isAdmin && sent[field] !== (current?.[section]?.[field] || '')) {
+          return res.status(403).json({ message: 'Only administrators can change payment or shipping credentials.' });
+        }
+        continue;
+      }
+      const storedVal = current?.[section]?.[field];
+      const shownVal = shown[section]?.[field];
+      const unchanged = String(sent[field] ?? '') === String(storedVal ?? '')
+        || String(sent[field] ?? '') === String(shownVal ?? '');
+      if (unchanged) {
+        // Echoed back from the form (possibly an env fallback) — keep what is stored.
+        delete sent[field];
+        continue;
+      }
+      if (!isAdmin) {
+        return res.status(403).json({ message: 'Only administrators can change payment or shipping credentials.' });
+      }
+    }
+    incoming[section] = { ...(current?.[section] || {}), ...sent };
   }
-  delete payment.cashfreeSecretSet;
-  incoming.payment = payment;
-  const shipping = { ...(current?.shipping || {}), ...(incoming.shipping || {}) };
-  if (!incoming.shipping?.ithinkSecretKey) {
-    shipping.ithinkSecretKey = current?.shipping?.ithinkSecretKey || '';
-  }
-  if (!incoming.shipping?.ithinkWebhookSecret) {
-    shipping.ithinkWebhookSecret = current?.shipping?.ithinkWebhookSecret || '';
-  }
-  delete shipping.ithinkSecretSet;
-  delete shipping.ithinkWebhookSecretSet;
-  incoming.shipping = shipping;
+
   const settings = await StoreSettings.findOneAndUpdate(
     { key: 'store' },
     { $set: { ...incoming, key: 'store' } },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true, runValidators: true }
   ).lean();
-  const out = settings.toObject ? settings.toObject() : settings;
-  if (out.payment) {
-    out.payment.cashfreeSecretSet = Boolean(out.payment.cashfreeSecret || process.env.CASHFREE_SECRET_KEY);
-    out.payment.cashfreeSecret = '';
-  }
-  if (out.shipping) {
-    out.shipping.ithinkSecretSet = Boolean(out.shipping.ithinkSecretKey || process.env.ITHINK_SECRET_KEY);
-    out.shipping.ithinkWebhookSecretSet = Boolean(out.shipping.ithinkWebhookSecret || process.env.ITHINK_WEBHOOK_SECRET);
-    out.shipping.ithinkSecretKey = '';
-    out.shipping.ithinkWebhookSecret = '';
-  }
-  res.json({ settings: out });
+  res.json({ settings: maskSettings(settings) });
 });

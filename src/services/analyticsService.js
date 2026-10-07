@@ -7,40 +7,68 @@ const Category = require('../models/Category');
 
 const PAID = ['paid', 'processing', 'packed', 'shipped', 'delivered'];
 
-function parseRange(query) {
+const DAY_MS = 86400000;
+const MAX_RANGE_DAYS = 366;
+
+function rangeError(message) {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+}
+
+function parseDateParam(value) {
+  if (value == null || typeof value === 'object') return null;
+  const raw = String(value).trim();
+  if (!raw || raw.length > 40) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Resolves a reporting window from ?range= or ?from=&to=.
+ * Invalid dates throw a 400; custom ranges are clamped to MAX_RANGE_DAYS (ending at `to`).
+ */
+function parseRange(query = {}) {
   const now = new Date();
-  if (query.from && query.to) {
-    const from = new Date(query.from);
-    const to = new Date(query.to);
+  if (query.from || query.to) {
+    const from = parseDateParam(query.from);
+    const to = parseDateParam(query.to);
+    if (!from || !to) throw rangeError('Provide valid "from" and "to" dates (YYYY-MM-DD).');
     to.setHours(23, 59, 59, 999);
-    return { from, to, range: 'custom' };
+    if (from > to) throw rangeError('"from" must be on or before "to".');
+    let clampedFrom = from;
+    if (to.getTime() - from.getTime() > MAX_RANGE_DAYS * DAY_MS) {
+      clampedFrom = new Date(to.getTime() - MAX_RANGE_DAYS * DAY_MS);
+    }
+    return { from: clampedFrom, to, range: 'custom', clamped: clampedFrom !== from };
   }
-  const range = query.range || '30d';
+  const range = typeof query.range === 'string' ? query.range : '30d';
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   if (range === 'today') return { from: start, to: now, range };
-  const days = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 }[range] || 30;
-  return { from: new Date(now.getTime() - days * 86400000), to: now, range };
+  const known = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+  const days = known[range] || 30;
+  return { from: new Date(now.getTime() - days * DAY_MS), to: now, range: known[range] ? range : '30d' };
+}
+
+/** Neutralises spreadsheet formula injection (=, +, -, @, tab, CR) in CSV cells. */
+function csvCell(val) {
+  if (val == null) return '';
+  let s = val instanceof Date ? val.toISOString() : String(val);
+  if (typeof val !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function toCsv(rows, columns) {
-  const header = columns.map((c) => c.label).join(',');
-  const lines = rows.map((row) =>
-    columns
-      .map((c) => {
-        const val = c.value(row);
-        const s = val == null ? '' : String(val);
-        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-      })
-      .join(',')
-  );
+  const header = columns.map((c) => csvCell(c.label)).join(',');
+  const lines = rows.map((row) => columns.map((c) => csvCell(c.value(row))).join(','));
   return [header, ...lines].join('\n');
 }
 
 async function buildReport({ from, to }) {
   const paidMatch = { status: { $in: PAID }, createdAt: { $gte: from, $lte: to } };
   const [orders, customers, allCustomers, abandoned, categories] = await Promise.all([
-    Order.find(paidMatch).lean(),
+    Order.find(paidMatch).select('total items createdAt').lean(),
     User.countDocuments({ role: 'customer', createdAt: { $gte: from, $lte: to } }),
     User.countDocuments({ role: 'customer' }),
     Cart.countDocuments({ 'items.0': { $exists: true }, updatedAt: { $lt: new Date(Date.now() - 3600000) } }),
@@ -113,4 +141,4 @@ async function buildReport({ from, to }) {
   };
 }
 
-module.exports = { parseRange, toCsv, buildReport, PAID };
+module.exports = { parseRange, toCsv, csvCell, buildReport, PAID, MAX_RANGE_DAYS };

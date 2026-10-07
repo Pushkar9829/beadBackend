@@ -5,7 +5,7 @@ const Order = require('../models/Order');
 const PAID = ['paid', 'processing', 'packed', 'shipped', 'delivered'];
 
 async function productsForCollection(collection, extraFilter = {}) {
-  const limit = collection.ruleConfig?.limit || 24;
+  const limit = Math.min(100, Math.max(1, Math.floor(Number(collection.ruleConfig?.limit)) || 24));
   const filter = { isActive: true, ...extraFilter };
   const rule = collection.ruleType || 'manual';
 
@@ -74,19 +74,24 @@ const DEFAULT_COLLECTIONS = [
   { name: 'Healing Collection', slug: 'healing-collection', ruleType: 'manual', sortOrder: 7 },
 ];
 
+/** Seeds the built-in collections if missing. Call once at startup, never from a request path. */
 async function ensureDefaultCollections() {
-  for (const row of DEFAULT_COLLECTIONS) {
-    await Collection.findOneAndUpdate(
-      { slug: row.slug },
-      { $setOnInsert: { ...row, isActive: true } },
-      { upsert: true }
-    );
-  }
+  await Collection.bulkWrite(
+    DEFAULT_COLLECTIONS.map((row) => ({
+      updateOne: {
+        filter: { slug: row.slug },
+        update: { $setOnInsert: { ...row, isActive: true } },
+        upsert: true,
+      },
+    })),
+    { ordered: false }
+  );
 }
 
+const PUBLIC_COLLECTION_FIELDS = 'name slug description image sortOrder ruleType';
+
 async function listPublicCollections() {
-  await ensureDefaultCollections();
-  return Collection.find({ isActive: true }).sort({ sortOrder: 1, name: 1 }).lean();
+  return Collection.find({ isActive: true }).select(PUBLIC_COLLECTION_FIELDS).sort({ sortOrder: 1, name: 1 }).limit(200).lean();
 }
 
 async function getBySlug(slug) {

@@ -1,5 +1,4 @@
 require('dotenv').config();
-const { connectDb } = require('../config/db');
 const Bead = require('../models/Bead');
 const { slugifyName } = require('../utils/asyncHandler');
 const { sellingPriceFor } = require('../data/beadPriceSource');
@@ -125,8 +124,8 @@ async function ensureLayerBeads() {
   const priced = [];
   for (const bead of EXTRA_LAYER_BEADS) {
     const slug = slugifyName(bead.name);
-    const existing = await Bead.findOne({ $or: [{ slug }, { name: bead.name }] });
-    if (existing) continue;
+    const existing = await Bead.findOne({ $or: [{ slug }, { name: bead.name }] }).select('_id').lean();
+    if (existing) continue; // insert-only: never touch admin-editable fields on existing beads
     await Bead.create({
       ...bead,
       slug,
@@ -138,14 +137,18 @@ async function ensureLayerBeads() {
     created.push(bead.name);
   }
 
-  const all = await Bead.find();
-  for (const bead of all) {
+  // Only fill a catalog price on beads that have none; never overwrite admin-edited prices.
+  const unpriced = await Bead.find({ $or: [{ pricePerBead: null }, { pricePerBead: { $exists: false } }] })
+    .select('_id name')
+    .lean();
+  for (const bead of unpriced) {
     const price = sellingPriceFor(bead.name);
-    if (price == null || price <= 0) continue;
-    if (Number(bead.pricePerBead) === Number(price)) continue;
-    bead.pricePerBead = price;
-    await bead.save();
-    priced.push(bead.name);
+    if (price == null || !(price > 0)) continue;
+    const res = await Bead.updateOne(
+      { _id: bead._id, $or: [{ pricePerBead: null }, { pricePerBead: { $exists: false } }] },
+      { $set: { pricePerBead: price } }
+    );
+    if (res.modifiedCount) priced.push(bead.name);
   }
   return { created, priced };
 }
@@ -153,6 +156,7 @@ async function ensureLayerBeads() {
 module.exports = { ensureLayerBeads, EXTRA_LAYER_BEADS };
 
 if (require.main === module) {
+  const { connectDb } = require('../config/db');
   connectDb()
     .then(() => ensureLayerBeads())
     .then((result) => {

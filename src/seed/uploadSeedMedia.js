@@ -302,6 +302,10 @@ module.exports = { uploadSeedMedia, FRONTEND_ROOT, CATALOG_ROOT };
 
 if (require.main === module) {
   (async () => {
+    require('./destructiveGuard').assertDestructiveAllowed(
+      'seed:media',
+      'upload seed media and OVERWRITE image fields on beads, products, purposes, charms, banners, home content and store logo'
+    );
     await connectDb();
     const result = await uploadSeedMedia();
     console.log('Seed media upload complete.', result);

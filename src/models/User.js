@@ -29,6 +29,7 @@ const userSchema = new mongoose.Schema(
     phone: String,
     addresses: [addressSchema],
     groupIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CustomerGroup' }],
+    tokenVersion: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

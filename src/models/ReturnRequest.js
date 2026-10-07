@@ -11,10 +11,21 @@ const returnRequestSchema = new mongoose.Schema(
       {
         name: String,
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
-        quantity: { type: Number, default: 1 },
+        lineIndex: Number,
+        quantity: {
+          type: Number,
+          default: 1,
+          min: 1,
+          validate: { validator: Number.isInteger, message: 'Quantity must be a whole number.' },
+        },
+        amount: { type: Number, default: 0, min: 0 },
       },
     ],
-    refundAmount: { type: Number, default: 0 },
+    refundAmount: { type: Number, default: 0, min: 0 },
+    refundId: String,
+    restockedAt: Date,
+    // Set to the orderId while the request is open; a unique index allows one open request per order.
+    openKey: { type: String, default: undefined },
     status: {
       type: String,
       enum: ['requested', 'approved', 'rejected', 'refunded', 'restocked'],
@@ -37,5 +48,13 @@ const returnRequestSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+const OPEN_STATUSES = ['requested', 'approved'];
+
+returnRequestSchema.pre('validate', function setOpenKey() {
+  this.openKey = OPEN_STATUSES.includes(this.status) ? String(this.orderId) : undefined;
+});
+
+returnRequestSchema.index({ openKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('ReturnRequest', returnRequestSchema);

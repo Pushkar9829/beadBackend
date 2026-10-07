@@ -1,4 +1,7 @@
 const StoreSettings = require('../models/StoreSettings');
+const { canTransition } = require('./orderLifecycleService');
+
+const NO_COURIER_UPDATES = ['cancelled', 'returned', 'pending_payment'];
 
 const PROD = 'https://my.ithinklogistics.com';
 const STAGING = 'https://pre-alpha.ithinklogistics.com';
@@ -64,17 +67,24 @@ async function publicStatus() {
 async function post(path, extra = {}, { baseUrl } = {}) {
   const cfg = await getConfig();
   if (!cfg.enabled) throw fail('iThink Logistics is not configured. Add access token and secret in Settings.');
-  const res = await fetch(`${baseUrl || cfg.baseUrl}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-cache' },
-    body: JSON.stringify({
-      data: {
-        ...extra,
-        access_token: cfg.accessToken,
-        secret_key: cfg.secretKey,
-      },
-    }),
-  });
+  let res;
+  try {
+    res = await fetch(`${baseUrl || cfg.baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-cache' },
+      body: JSON.stringify({
+        data: {
+          ...extra,
+          access_token: cfg.accessToken,
+          secret_key: cfg.secretKey,
+        },
+      }),
+      signal: AbortSignal.timeout(Number(process.env.HTTP_TIMEOUT_MS) || 15000),
+    });
+  } catch (cause) {
+    const timedOut = cause?.name === 'TimeoutError' || cause?.name === 'AbortError';
+    throw fail(timedOut ? 'iThink Logistics did not respond in time.' : 'Could not reach iThink Logistics.', timedOut ? 504 : 502);
+  }
   const text = await res.text();
   let json;
   try {
@@ -372,7 +382,10 @@ async function applyTrackingToOrder(order, tracking, target) {
     if (tracking.waybill) order.shipment.returnWaybill = tracking.waybill;
     if (tracking.trackingUrl) order.shipment.returnTrackingUrl = tracking.trackingUrl;
     const next = mapStatusToOrder(tracking.currentStatus);
-    if ((next === 'returned' || next === 'delivered') && order.status !== 'returned') {
+    if ((next === 'returned' || next === 'delivered') && order.status !== 'returned' && canTransition(order.status, 'returned')) {
+      // Back to origin before delivery = RTO: the goods never left us, so restock on save.
+      // (A customer return after delivery is restocked through the return request instead.)
+      if (order.status === 'shipped') order.$locals.restockAfterSave = true;
       order.status = 'returned';
       order.timeline = order.timeline || [];
       order.timeline.push({ status: 'returned', note: `iThink reverse: ${tracking.currentStatus}`, at: new Date() });
@@ -396,12 +409,27 @@ async function applyTrackingToOrder(order, tracking, target) {
   if (tracking.waybill && !order.shipment.waybill) order.shipment.waybill = tracking.waybill;
   if (tracking.trackingUrl) order.shipment.trackingUrl = tracking.trackingUrl;
   const next = mapStatusToOrder(tracking.currentStatus);
-  if (next && next !== order.status) {
-    order.status = next;
+  for (const step of courierStatusPath(order.status, next)) {
+    order.status = step;
     order.timeline = order.timeline || [];
-    order.timeline.push({ status: next, note: `iThink: ${tracking.currentStatus}`, at: new Date() });
+    order.timeline.push({ status: step, note: `iThink: ${tracking.currentStatus}`, at: new Date() });
+    // Forward shipment returned to origin: restock once the order is saved (Order post-save hook).
+    if (step === 'returned') order.$locals.restockAfterSave = true;
   }
   return order;
+}
+
+// Courier updates may only move an order forward along allowed transitions. Orders that are
+// cancelled, returned, or still awaiting payment are never changed by tracking data.
+// A "delivered" scan on a paid/packed order (missed pickup scan) steps through "shipped".
+function courierStatusPath(current, next) {
+  if (!next || next === current) return [];
+  if (NO_COURIER_UPDATES.includes(current)) return [];
+  if (canTransition(current, next)) return [next];
+  if (next !== 'shipped' && canTransition(current, 'shipped') && canTransition('shipped', next)) {
+    return ['shipped', next];
+  }
+  return [];
 }
 
 function formatStamp(d) {

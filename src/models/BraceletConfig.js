@@ -42,20 +42,20 @@ const studioModeSchema = new mongoose.Schema(
 
 const braceletConfigSchema = new mongoose.Schema(
   {
-    beadLimit: { type: Number, required: true, default: 32 },
-    minBeads: { type: Number, default: 1 },
-    baseMakingPrice: { type: Number, required: true, default: 0 },
+    beadLimit: { type: Number, required: true, default: 32, min: 1 },
+    minBeads: { type: Number, default: 1, min: 0 },
+    baseMakingPrice: { type: Number, required: true, default: 0, min: 0 },
     wristSizes: { type: [String], default: ['5.5"', '6"', '6.5"', '7"', '7.5"', '8"'] },
     defaultWristSize: { type: String, default: '6.5"' },
     beadSizesMm: { type: [Number], default: [6, 8, 10] },
     defaultBeadSizeMm: { type: Number, default: 8 },
     packaging: {
-      box: { type: Number, default: 44 },
-      clasp: { type: Number, default: 10 },
-      charm: { type: Number, default: 60 },
-      cz: { type: Number, default: 6 },
-      roundCz: { type: Number, default: 8 },
-      thread: { type: Number, default: 20 },
+      box: { type: Number, default: 44, min: 0 },
+      clasp: { type: Number, default: 10, min: 0 },
+      charm: { type: Number, default: 60, min: 0 },
+      cz: { type: Number, default: 6, min: 0 },
+      roundCz: { type: Number, default: 8, min: 0 },
+      thread: { type: Number, default: 20, min: 0 },
     },
     packagingLabels: {
       box: { type: String, default: 'Box' },

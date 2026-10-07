@@ -35,6 +35,7 @@ const orderSchema = new mongoose.Schema(
       cfOrderId: String,
       cfNumericId: String,
       refundId: String,
+      refundedAmount: { type: Number, default: 0, min: 0 },
     },
     shipment: {
       provider: { type: String, default: null },
@@ -50,6 +51,14 @@ const orderSchema = new mongoose.Schema(
       returnTrackingUrl: { type: String, default: null },
       returnStatus: { type: String, default: null },
     },
+    inventory: {
+      deducted: { type: Boolean, default: false },
+      deductedAt: Date,
+      restored: { type: Boolean, default: false },
+      restoredAt: Date,
+      oversold: { type: Boolean, default: false },
+    },
+    flashSaleRecorded: { type: Boolean, default: false },
     notes: String,
     timeline: [
       {
@@ -59,7 +68,22 @@ const orderSchema = new mongoose.Schema(
       },
     ],
   },
-  { timestamps: true }
+  // Stale save() calls (admin edits, courier updates) fail with a VersionError instead of
+  // silently overwriting a concurrent cancel or payment claim, which bump __v.
+  { timestamps: true, optimisticConcurrency: true }
 );
+
+// A forward shipment that comes back to origin (RTO) never reached the customer: put the stock back.
+orderSchema.post('save', async function restockAfterRto(doc) {
+  if (!doc.$locals?.restockAfterSave) return;
+  doc.$locals.restockAfterSave = false;
+  try {
+    await require('../services/inventoryService').restoreOrderStock(doc);
+  } catch (err) {
+    console.error(`[orders] RTO restock failed for ${doc.orderNumber}:`, err.message);
+  }
+});
+
+orderSchema.index({ status: 1, 'payment.status': 1, createdAt: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

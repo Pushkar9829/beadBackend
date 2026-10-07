@@ -2,7 +2,7 @@ const express = require('express');
 const ctrl = require('../controllers/adminController');
 const commerce = require('../controllers/commerceController');
 const platform = require('../controllers/platformController');
-const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { requireAuth, requireAdmin, requireRole } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 
 const router = express.Router();
@@ -15,6 +15,7 @@ router.get('/customers', commerce.customers);
 router.get('/customers/:id', platform.customerProfile);
 router.put('/customers/:id/groups', platform.assignGroups);
 router.get('/users', ctrl.users);
+// Managers/staff may edit names and phones; role and permission changes are admin-only inside the controller.
 router.put('/users/:id', ctrl.updateUser);
 router.get('/content', ctrl.content);
 router.put('/content', ctrl.saveContent);
@@ -46,8 +47,8 @@ router.get('/inventory/history', commerce.stockHistory);
 
 router.get('/abandoned-carts', commerce.abandonedCarts);
 router.post('/abandoned-carts/:id/remind', platform.remindAbandoned);
-router.get('/settings', commerce.getSettings);
-router.put('/settings', commerce.saveSettings);
+router.get('/settings', requireRole('admin'), commerce.getSettings);
+router.put('/settings', requireRole('admin'), commerce.saveSettings);
 
 router.get('/attributes', platform.listAttributes);
 router.post('/attributes', platform.saveAttribute);
@@ -102,6 +103,7 @@ router.put('/returns/:id', platform.updateReturn);
 router.post('/returns/:id/pickup', platform.bookReturnPickup);
 router.get('/ithink/warehouses', platform.ithinkWarehouses);
 router.get('/webhooks', require('../controllers/webhookController').adminEvents);
+router.get('/webhooks/urls', require('../controllers/webhookController').list);
 router.post('/shipping/sync', require('../controllers/webhookController').ithinkSync);
 
 module.exports = router;

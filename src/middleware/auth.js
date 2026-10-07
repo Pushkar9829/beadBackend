@@ -1,10 +1,28 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+function jwtSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.length < 32 || secret === 'change-me') {
+    throw new Error('JWT_SECRET must be set to a random string of at least 32 characters.');
+  }
+  return secret;
+}
+
 function signToken(user) {
-  return jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
+  return jwt.sign({ id: user._id, role: user.role, tv: user.tokenVersion || 0 }, jwtSecret(), {
+    algorithm: 'HS256',
     expiresIn: process.env.JWT_EXPIRES || '7d',
   });
+}
+
+// Resolves the user for a token, rejecting tokens revoked by logout or a password change.
+async function userFromToken(token) {
+  const payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'] });
+  const user = await User.findById(payload.id);
+  if (!user) return null;
+  if ((payload.tv || 0) !== (user.tokenVersion || 0)) return null;
+  return user;
 }
 
 function cookieOptions() {
@@ -36,8 +54,7 @@ async function optionalAuth(req, res, next) {
   const token = readToken(req);
   if (!token) return next();
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(payload.id);
+    req.user = await userFromToken(token);
   } catch {
     req.user = null;
   }
@@ -48,8 +65,7 @@ async function requireAuth(req, res, next) {
   const token = readToken(req);
   if (!token) return res.status(401).json({ message: 'Please sign in to continue.' });
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(payload.id);
+    const user = await userFromToken(token);
     if (!user) return res.status(401).json({ message: 'Session expired. Please sign in again.' });
     req.user = user;
     next();
@@ -79,7 +95,17 @@ function requirePermission(permission) {
   };
 }
 
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ message: 'Only an administrator can do this.' });
+    }
+    next();
+  };
+}
+
 module.exports = {
+  jwtSecret,
   signToken,
   setAuthCookie,
   clearAuthCookie,
@@ -87,5 +113,6 @@ module.exports = {
   requireAuth,
   requireAdmin,
   requirePermission,
+  requireRole,
   STAFF_ROLES,
 };

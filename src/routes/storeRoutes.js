@@ -2,6 +2,7 @@ const express = require('express');
 const platform = require('../controllers/platformController');
 const wishlist = require('../controllers/wishlistController');
 const { requireAuth } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
@@ -15,10 +16,15 @@ router.get('/faqs', platform.publicFaqs);
 router.get('/blog', platform.publicBlog);
 router.get('/blog/:slug', platform.publicBlogOne);
 router.get('/home/collections', platform.homeCollections);
-router.get('/pincode/:pincode', platform.checkPin);
-router.get('/geo/reverse', platform.reverseGeo);
-router.post('/newsletter', platform.subscribe);
-router.post('/contact', platform.contact);
+const formLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, message: 'Too many submissions. Please try again later.' });
+// Nominatim allows ~1 req/s for the whole server, so keep each client well under that.
+const geoLimit = rateLimit({ windowMs: 60 * 1000, max: 10 });
+const pincodeLimit = rateLimit({ windowMs: 60 * 1000, max: 30 });
+
+router.get('/pincode/:pincode', pincodeLimit, platform.checkPin);
+router.get('/geo/reverse', geoLimit, platform.reverseGeo);
+router.post('/newsletter', formLimit, platform.subscribe);
+router.post('/contact', formLimit, platform.contact);
 
 router.get('/wishlist', requireAuth, wishlist.get);
 router.post('/wishlist', requireAuth, wishlist.add);

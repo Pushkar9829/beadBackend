@@ -1,8 +1,10 @@
+const mongoose = require('mongoose');
 const IntentionBead = require('../models/IntentionBead');
 const Bead = require('../models/Bead');
 
 async function getRecommendedBeads(intentionId) {
-  const links = await IntentionBead.find({ intentionId }).sort({ sortOrder: 1 }).lean();
+  if (!mongoose.isValidObjectId(intentionId)) return [];
+  const links = await IntentionBead.find({ intentionId: String(intentionId) }).sort({ sortOrder: 1 }).limit(500).lean();
   const beadIds = links.map((l) => l.beadId);
   const beads = await Bead.find({ _id: { $in: beadIds }, isActive: true }).lean();
   const byId = Object.fromEntries(beads.map((b) => [String(b._id), b]));

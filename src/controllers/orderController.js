@@ -1,19 +1,62 @@
+const crypto = require('crypto');
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Cart = require('../models/Cart');
-const Product = require('../models/Product');
 const ReturnRequest = require('../models/ReturnRequest');
 const { asyncHandler, escapeRegex } = require('../utils/asyncHandler');
 const { quote: quoteCart } = require('../services/checkoutService');
 const { findUsableCoupon, recordUsage } = require('../services/couponService');
 const { recordFlashSaleOrder } = require('../services/flashSaleService');
+const { deductOrderStock, restoreOrderStock } = require('../services/inventoryService');
+const { assertTransition, cancelOrder } = require('../services/orderLifecycleService');
 const { notify } = require('../services/notificationService');
 const cashfree = require('../services/cashfreeService');
 const ithink = require('../services/ithinkService');
 const { evaluateRequest } = require('../services/returnPolicy');
 
+const ORDER_STATUSES = ['pending_payment', 'paid', 'processing', 'packed', 'shipped', 'delivered', 'cancelled', 'returned'];
+const PAYMENT_STATUSES = ['pending', 'paid', 'failed', 'refunded'];
+const PAYMENT_METHODS = ['cod', 'upi', 'gateway'];
+const ADDRESS_FIELDS = { name: 120, phone: 20, line1: 200, line2: 200, landmark: 120, city: 80, state: 80, pincode: 10, country: 60, email: 120 };
+
+function badRequest(message) {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+}
+
+// Optional string input: undefined/null -> fallback; non-string -> 400; otherwise trimmed and capped.
+function optString(value, max, field, fallback = '') {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'number' && Number.isFinite(value)) value = String(value);
+  if (typeof value !== 'string') throw badRequest(`${field} must be text.`);
+  return value.trim().slice(0, max);
+}
+
+function cleanAddress(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw badRequest('A shipping address is required.');
+  const out = {};
+  for (const [key, max] of Object.entries(ADDRESS_FIELDS)) {
+    const v = optString(raw[key], max, `Address ${key}`);
+    if (v) out[key] = v;
+  }
+  return out;
+}
+
+// KS-<base36 time><4 random base36 chars>, e.g. KS-MG3K2Q1A7XQ2.
 function makeOrderNumber() {
-  const n = Math.floor(100000 + Math.random() * 900000);
-  return `KS-${n}`;
+  const rand = crypto.randomBytes(4).readUInt32BE(0).toString(36).padStart(4, '0').slice(-4);
+  return `KS-${Date.now().toString(36)}${rand}`.toUpperCase();
+}
+
+async function createWithOrderNumber(data) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await Order.create({ ...data, orderNumber: makeOrderNumber() });
+    } catch (err) {
+      if (err.code !== 11000 || !err.keyPattern?.orderNumber || attempt >= 4) throw err;
+    }
+  }
 }
 
 exports.create = asyncHandler(async (req, res) => {
@@ -21,8 +64,23 @@ exports.create = asyncHandler(async (req, res) => {
   if (!cart || cart.items.length === 0) {
     return res.status(400).json({ message: 'Your cart is empty.' });
   }
-  const { shippingAddress, notes, phone, contactName, couponCode, paymentMethod, upiRef } = req.body;
-  if (!shippingAddress?.line1 || !shippingAddress?.city || !/^\d{6}$/.test(String(shippingAddress?.pincode || '').replace(/\D/g, ''))) {
+  let input;
+  try {
+    input = {
+      shippingAddress: cleanAddress(req.body.shippingAddress),
+      notes: optString(req.body.notes, 1000, 'Notes'),
+      phone: optString(req.body.phone, 20, 'Phone'),
+      contactName: optString(req.body.contactName, 120, 'Name'),
+      couponCode: optString(req.body.couponCode, 40, 'Coupon code').toUpperCase(),
+      paymentMethod: optString(req.body.paymentMethod, 20, 'Payment method'),
+      upiRef: optString(req.body.upiRef, 64, 'UPI reference'),
+    };
+  } catch (err) {
+    return res.status(err.status || 400).json({ message: err.message });
+  }
+  const { shippingAddress, notes, phone, contactName, couponCode, paymentMethod, upiRef } = input;
+  shippingAddress.pincode = String(shippingAddress.pincode || '').replace(/\D/g, '');
+  if (!shippingAddress.line1 || !shippingAddress.city || !/^\d{6}$/.test(shippingAddress.pincode)) {
     return res.status(400).json({ message: 'A complete shipping address with a 6-digit pincode is required.' });
   }
   const orderPhone = String(phone || shippingAddress.phone || req.user.phone || '').replace(/\D/g, '');
@@ -41,6 +99,12 @@ exports.create = asyncHandler(async (req, res) => {
     user: req.user,
     pincode: shippingAddress.pincode,
   });
+  if (priced.error) {
+    return res.status(400).json({ message: `${priced.error} Please update your bag.`, itemErrors: priced.itemErrors });
+  }
+  if (!priced.items.length) {
+    return res.status(400).json({ message: 'Your cart is empty.' });
+  }
   if (!priced.pincode.serviceable) {
     return res.status(400).json({ message: 'We do not deliver to this pincode yet.' });
   }
@@ -48,7 +112,7 @@ exports.create = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: priced.couponError });
   }
 
-  const method = ['cod', 'upi', 'gateway'].includes(paymentMethod) ? paymentMethod : 'cod';
+  const method = PAYMENT_METHODS.includes(paymentMethod) ? paymentMethod : 'cod';
   if (method === 'cod' && !priced.payment.cod) {
     return res.status(400).json({ message: 'Cash on delivery is not available for this order. Please pay online.' });
   }
@@ -70,12 +134,12 @@ exports.create = asyncHandler(async (req, res) => {
 
   const status = isCod ? 'processing' : 'pending_payment';
   const paymentStatus = 'pending';
+  const name = contactName || req.user.name || shippingAddress.name;
 
-  const order = await Order.create({
-    orderNumber: makeOrderNumber(),
+  const order = await createWithOrderNumber({
     userId: req.user._id,
     email: req.user.email,
-    contactName: contactName || req.user.name,
+    contactName: name,
     phone: mobile,
     items: priced.items,
     subtotal: priced.subtotal,
@@ -89,7 +153,7 @@ exports.create = asyncHandler(async (req, res) => {
     offerName: priced.offer?.label || priced.offer?.name,
     shippingAddress: {
       ...shippingAddress,
-      name: contactName || req.user.name || shippingAddress.name,
+      name,
       phone: mobile,
     },
     status,
@@ -107,6 +171,7 @@ exports.create = asyncHandler(async (req, res) => {
 
   let checkout = null;
   if (isGateway) {
+    // Stock, coupon usage and cart clearing happen in the payment flow once Cashfree confirms payment.
     try {
       checkout = await cashfree.createCheckoutSession(order, {
         req,
@@ -117,36 +182,24 @@ exports.create = asyncHandler(async (req, res) => {
       return res.status(err.status || 400).json({ message: err.message || 'Could not start Cashfree checkout.' });
     }
   } else {
-    if (priced.coupon) {
-      const coupon = await findUsableCoupon(priced.coupon.code);
-      if (coupon) await recordUsage({ coupon, user: req.user, order, discount: priced.discount });
+    try {
+      await deductOrderStock(order, { strict: true });
+    } catch (err) {
+      await Order.findByIdAndDelete(order._id);
+      return res.status(err.status || 409).json({ message: err.message || 'Some items are out of stock.' });
     }
-    await recordFlashSaleOrder(order);
-
-    for (const item of priced.items) {
-      if (item.kind === 'product' && item.productId) {
-        const product = await Product.findById(item.productId);
-        if (!product) continue;
-        const previousStock = product.stock || 0;
-        product.stock = Math.max(0, previousStock - (item.quantity || 1));
-        await product.save();
-        if (product.stock <= 0) {
-          await notify({
-            type: 'out_of_stock',
-            title: `${product.name} is out of stock`,
-            body: `Stock hit 0 after order ${order.orderNumber}.`,
-            link: '/admin/inventory',
-          });
-        } else if (product.stock <= (product.lowStockLimit ?? 5)) {
-          await notify({
-            type: 'low_stock',
-            title: `${product.name} is low on stock`,
-            body: `Stock is ${product.stock} after order ${order.orderNumber}.`,
-            link: '/admin/inventory/low',
-          });
-        }
+    if (priced.coupon) {
+      try {
+        const coupon = await findUsableCoupon(priced.coupon.code);
+        if (!coupon) throw new Error('This coupon is no longer available.');
+        await recordUsage({ coupon, user: req.user, order, discount: priced.discount });
+      } catch (err) {
+        await restoreOrderStock(order);
+        await Order.findByIdAndDelete(order._id);
+        return res.status(409).json({ message: err.message || 'This coupon can no longer be applied.' });
       }
     }
+    await recordFlashSaleOrder(order).catch((err) => console.warn('[orders] flash sale stats:', err.message));
 
     await notify({
       type: 'new_order',
@@ -155,13 +208,15 @@ exports.create = asyncHandler(async (req, res) => {
       link: '/admin/orders',
       meta: { orderId: order._id, total: order.total },
     });
+
+    cart.items = [];
+    cart.couponCode = '';
+    await cart.save();
   }
 
-  cart.items = [];
-  cart.couponCode = '';
-  await cart.save();
+  const fresh = (await Order.findById(order._id)) || order;
   res.status(201).json({
-    order,
+    order: fresh,
     cashfree: checkout,
   });
 });
@@ -205,25 +260,54 @@ exports.adminList = asyncHandler(async (req, res) => {
 });
 
 exports.adminUpdate = asyncHandler(async (req, res) => {
+  if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ message: 'Order not found.' });
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ message: 'Order not found.' });
   const prev = order.status;
-  if (req.body.status) order.status = req.body.status;
-  if (req.body.notes !== undefined) order.notes = req.body.notes;
-  order.shipment = order.shipment || {};
-  if (req.body.carrier !== undefined) order.shipment.carrier = req.body.carrier;
-  if (req.body.waybill !== undefined) order.shipment.waybill = req.body.waybill;
-  if (req.body.trackingUrl !== undefined) order.shipment.trackingUrl = req.body.trackingUrl;
-  order.payment = order.payment || {};
-  if (req.body.paymentStatus) order.payment.status = req.body.paymentStatus;
-  if (req.body.paymentMethod) order.payment.method = req.body.paymentMethod;
-  if (req.body.gatewayRef !== undefined) order.payment.gatewayRef = req.body.gatewayRef;
-  if (req.body.upiRef !== undefined) order.payment.upiRef = req.body.upiRef;
-  if (req.body.paymentStatus === 'paid') {
-    order.payment.capturedAt = new Date();
-    if (!req.body.status && order.status === 'pending_payment') order.status = 'paid';
+  const body = req.body || {};
+
+  let input;
+  try {
+    input = {
+      status: optString(body.status, 30, 'Status'),
+      paymentStatus: optString(body.paymentStatus, 20, 'Payment status'),
+      paymentMethod: optString(body.paymentMethod, 20, 'Payment method'),
+      timelineNote: optString(body.timelineNote, 300, 'Timeline note'),
+    };
+    if (input.status && !ORDER_STATUSES.includes(input.status)) throw badRequest('Unknown order status.');
+    if (input.paymentStatus && !PAYMENT_STATUSES.includes(input.paymentStatus)) throw badRequest('Unknown payment status.');
+    if (input.paymentMethod && !PAYMENT_METHODS.includes(input.paymentMethod)) throw badRequest('Unknown payment method.');
+    if (input.status) assertTransition(prev, input.status);
+    for (const [key, max] of [['notes', 2000], ['carrier', 120], ['waybill', 120], ['trackingUrl', 500], ['gatewayRef', 200], ['upiRef', 64]]) {
+      if (body[key] !== undefined) input[key] = optString(body[key], max, key, null);
+    }
+  } catch (err) {
+    return res.status(err.status || 400).json({ message: err.message });
   }
-  if (req.body.paymentStatus === 'failed') {
+
+  const cancelling = input.status === 'cancelled' && prev !== 'cancelled';
+  if (input.status && !cancelling) order.status = input.status;
+  if (input.notes !== undefined) order.notes = input.notes || '';
+  order.shipment = order.shipment || {};
+  if (input.carrier !== undefined) order.shipment.carrier = input.carrier || null;
+  if (input.waybill !== undefined) order.shipment.waybill = input.waybill || null;
+  if (input.trackingUrl !== undefined) order.shipment.trackingUrl = input.trackingUrl || null;
+  order.payment = order.payment || {};
+  const prevPayment = order.payment.status;
+  if (input.paymentStatus) order.payment.status = input.paymentStatus;
+  if (input.paymentMethod) order.payment.method = input.paymentMethod;
+  if (input.gatewayRef !== undefined) order.payment.gatewayRef = input.gatewayRef || null;
+  if (input.upiRef !== undefined) order.payment.upiRef = input.upiRef || null;
+  const markedPaid = input.paymentStatus === 'paid' && prevPayment !== 'paid';
+  if (input.paymentStatus === 'paid') {
+    if (markedPaid) {
+      order.payment.capturedAt = new Date();
+      // Side effects run right here, so the payment flow must not run them again later.
+      order.payment.fulfilledAt = order.payment.fulfilledAt || new Date();
+    }
+    if (!input.status && order.status === 'pending_payment') order.status = 'paid';
+  }
+  if (input.paymentStatus === 'failed') {
     await notify({
       type: 'payment_failed',
       title: `Payment failed for ${order.orderNumber}`,
@@ -231,26 +315,49 @@ exports.adminUpdate = asyncHandler(async (req, res) => {
       link: '/admin/orders',
     });
   }
-  if (req.body.status === 'cancelled' && order.shipment?.waybill && prev !== 'cancelled') {
+  if (cancelling && order.shipment?.waybill) {
     try {
       await ithink.cancelShipment(order.shipment.waybill);
       order.timeline = order.timeline || [];
-      order.timeline.push({ status: 'cancelled', note: 'iThink shipment cancelled', at: new Date() });
+      order.timeline.push({ status: prev, note: 'iThink shipment cancelled', at: new Date() });
     } catch (err) {
       order.timeline = order.timeline || [];
-      order.timeline.push({ status: 'cancelled', note: `iThink cancel failed: ${err.message}`, at: new Date() });
+      order.timeline.push({ status: prev, note: `iThink cancel failed: ${err.message}`, at: new Date() });
     }
   }
-  if ((req.body.status && req.body.status !== prev) || req.body.paymentStatus) {
+  if (!cancelling && ((input.status && input.status !== prev) || input.paymentStatus)) {
     order.timeline = order.timeline || [];
     order.timeline.push({
-      status: req.body.status || order.status,
-      note: req.body.timelineNote || (req.body.paymentStatus ? `Payment ${req.body.paymentStatus}` : ''),
+      status: order.status,
+      note: input.timelineNote || (input.paymentStatus ? `Payment ${input.paymentStatus}` : ''),
       at: new Date(),
     });
   }
   await order.save();
-  res.json({ order });
+
+  // Manually confirmed payment: commit stock / coupon like the gateway flow would (both idempotent).
+  if (markedPaid && !cancelling && order.status !== 'cancelled') {
+    try {
+      await deductOrderStock(order, { strict: false });
+    } catch (err) {
+      console.error('[orders] stock deduction after manual payment failed:', err.message);
+    }
+    if (order.couponCode) {
+      try {
+        const coupon = await findUsableCoupon(order.couponCode);
+        if (coupon) await recordUsage({ coupon, user: { _id: order.userId }, order, discount: order.discount });
+      } catch (err) {
+        console.error('[orders] coupon usage after manual payment failed:', err.message);
+      }
+    }
+  }
+
+  if (cancelling) {
+    // cancelOrder restores stock, releases the coupon and flags refunds for paid orders.
+    const cancelled = await cancelOrder(order, { note: input.timelineNote || 'Cancelled by admin', by: 'admin' });
+    return res.json({ order: cancelled });
+  }
+  res.json({ order: await Order.findById(order._id) });
 });
 
 exports.verifyCashfree = asyncHandler(async (req, res) => {
@@ -271,6 +378,9 @@ exports.retryCashfree = asyncHandler(async (req, res) => {
   if (order.payment?.method !== 'gateway') {
     return res.status(400).json({ message: 'This order is not a Cashfree payment.' });
   }
+  if (order.status !== 'pending_payment') {
+    return res.status(409).json({ message: 'This order can no longer be paid. Please place a new order.' });
+  }
   const checkout = await cashfree.createCheckoutSession(order, {
     req,
     customer: { _id: req.user._id, name: order.contactName, email: req.user.email, phone: order.phone },
@@ -282,30 +392,80 @@ exports.retryCashfree = asyncHandler(async (req, res) => {
   res.json({ order, cashfree: checkout, paid: false });
 });
 
+// Resolves client-selected return lines against the order's own lines. Returns null if the selection is invalid.
+function resolveReturnLines(order, requested) {
+  const lines = order.items || [];
+  if (requested === undefined || requested === null || (Array.isArray(requested) && !requested.length)) {
+    return lines.map((line, index) => ({ line, index, quantity: Math.max(1, Math.floor(Number(line.quantity) || 1)) }));
+  }
+  if (!Array.isArray(requested)) return null;
+  const picked = new Map();
+  for (const raw of requested.slice(0, lines.length * 2)) {
+    if (!raw || typeof raw !== 'object') continue;
+    let index = Number.isInteger(raw.index) ? raw.index : Number.isInteger(raw.lineIndex) ? raw.lineIndex : -1;
+    if (index < 0 && raw.productId) {
+      index = lines.findIndex((l, i) => !picked.has(i) && l.productId && String(l.productId) === String(raw.productId));
+    }
+    const line = lines[index];
+    if (!line) continue; // not part of this order
+    const ordered = Math.max(1, Math.floor(Number(line.quantity) || 1));
+    const qty = raw.quantity === undefined ? ordered : Number(raw.quantity);
+    if (!Number.isInteger(qty) || qty < 1 || qty > ordered) return null;
+    picked.set(index, { line, index, quantity: qty });
+  }
+  return picked.size ? [...picked.values()] : null;
+}
+
 exports.requestReturn = asyncHandler(async (req, res) => {
+  if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ message: 'Order not found.' });
   const order = await Order.findOne({ _id: req.params.id, userId: req.user._id });
   if (!order) return res.status(404).json({ message: 'Order not found.' });
   const type = req.body.type === 'exchange' ? 'exchange' : 'return';
-  const reasonCode = String(req.body.reasonCode || '').trim();
+  const reasonCode = typeof req.body.reasonCode === 'string' ? req.body.reasonCode.trim().slice(0, 60) : '';
   const verdict = evaluateRequest({ order, type, reasonCode });
   if (!verdict.ok) return res.status(400).json({ message: verdict.message });
   const existing = await ReturnRequest.findOne({ orderId: order._id, status: { $in: ['requested', 'approved'] } });
   if (existing) return res.status(409).json({ message: 'A return or exchange is already open for this order.' });
-  const reason = req.body.reason || verdict.reasonLabel;
-  const doc = await ReturnRequest.create({
-    orderId: order._id,
-    userId: req.user._id,
-    type,
-    reasonCode,
-    reason,
-    items: (req.body.items || order.items || []).map((i) => ({
-      name: i.snapshot?.name || i.name,
-      productId: i.productId,
-      quantity: i.quantity || 1,
-    })),
-    refundAmount: type === 'exchange' ? 0 : (req.body.refundAmount != null ? Number(req.body.refundAmount) : order.total),
-    timeline: [{ status: 'requested', note: reason, at: new Date() }],
+
+  const selected = resolveReturnLines(order, req.body.items);
+  if (!selected) return res.status(400).json({ message: 'Choose valid items and quantities from this order.' });
+
+  // Refund = what was paid for the returned units, less their share of the order discount; never from the client.
+  const subtotal = Number(order.subtotal) || 0;
+  const discount = Math.max(0, Number(order.discount) || 0);
+  const items = selected.map(({ line, index, quantity }) => {
+    const ordered = Math.max(1, Math.floor(Number(line.quantity) || 1));
+    const lineTotal = Math.max(0, Number(line.lineTotal) || 0);
+    const gross = (lineTotal / ordered) * quantity;
+    const share = subtotal > 0 ? (discount * gross) / subtotal : 0;
+    return {
+      name: line.snapshot?.name || line.name,
+      productId: mongoose.isObjectIdOrHexString(line.productId) ? line.productId : undefined,
+      lineIndex: index,
+      quantity,
+      amount: Math.max(0, Math.round(gross - share)),
+    };
   });
+  const computed = items.reduce((sum, i) => sum + i.amount, 0);
+  const refundAmount = type === 'exchange' ? 0 : Math.min(Math.max(0, Number(order.total) || 0), computed);
+
+  const reason = (typeof req.body.reason === 'string' && req.body.reason.trim().slice(0, 1000)) || verdict.reasonLabel;
+  let doc;
+  try {
+    doc = await ReturnRequest.create({
+      orderId: order._id,
+      userId: req.user._id,
+      type,
+      reasonCode,
+      reason,
+      items,
+      refundAmount,
+      timeline: [{ status: 'requested', note: reason, at: new Date() }],
+    });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ message: 'A return or exchange is already open for this order.' });
+    throw err;
+  }
   await notify({
     type: 'return',
     title: `${type === 'exchange' ? 'Exchange' : 'Return'} requested for ${order.orderNumber}`,

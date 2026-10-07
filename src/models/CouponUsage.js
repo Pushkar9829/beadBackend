@@ -14,5 +14,10 @@ const couponUsageSchema = new mongoose.Schema(
 
 couponUsageSchema.index({ couponId: 1, userId: 1 });
 couponUsageSchema.index({ userId: 1, createdAt: -1 });
+// One usage row per (coupon, order) so a replayed payment can't count a coupon twice.
+couponUsageSchema.index(
+  { couponId: 1, orderId: 1 },
+  { unique: true, partialFilterExpression: { orderId: { $exists: true } } }
+);
 
 module.exports = mongoose.model('CouponUsage', couponUsageSchema);

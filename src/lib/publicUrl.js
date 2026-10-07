@@ -9,9 +9,11 @@ function publicApiOrigin(req) {
   if (envUrl && !/localhost|127\.0\.0\.1/i.test(envUrl)) return envUrl;
   if (String(process.env.NODE_ENV || '').toLowerCase() === 'production') return DEFAULT_API;
   if (req) {
-    const host = req.headers['x-forwarded-host'] || req.get?.('host');
-    if (host && !/localhost|127\.0\.0\.1/i.test(host)) {
-      const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    // Only the Host header (never client-supplied X-Forwarded-Host) — dev/non-production fallback only.
+    const host = String(req.get?.('host') || req.headers?.host || '').trim();
+    if (host && /^[a-z0-9.-]+(:\d+)?$/i.test(host) && !/localhost|127\.0\.0\.1/i.test(host)) {
+      // req.protocol honours X-Forwarded-Proto only from proxies trusted via app.set('trust proxy').
+      const proto = req.protocol === 'http' ? 'http' : 'https';
       return trimSlash(`${proto}://${host}`);
     }
   }

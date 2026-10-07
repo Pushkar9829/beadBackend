@@ -9,6 +9,7 @@ const notificationSchema = new mongoose.Schema(
         'low_stock',
         'out_of_stock',
         'payment_failed',
+        'refund_required',
         'new_customer',
         'abandoned_cart',
         'return',

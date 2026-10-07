@@ -11,11 +11,23 @@ const { getRecommendedBeads } = require('../services/recommendationService');
 const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
 const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
+
+// Admin update options: return the updated doc and enforce schema validators (min/enum/required).
+const UPDATE_OPTS = { returnDocument: 'after', runValidators: true };
+const UPSERT_OPTS = { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true, runValidators: true };
+const isObjectId = (value) =>
+  (typeof value === 'string' || value instanceof mongoose.Types.ObjectId) && mongoose.Types.ObjectId.isValid(value);
+const MAX_QUOTE_LINES = 200;
+const MAX_QUOTE_QTY = 1000;
+
+function badId(res, label = 'record') {
+  return res.status(400).json({ message: `Invalid ${label} id.` });
+}
 const { withStudioDefaults, activeStudioModes } = require('../data/studioConfigDefaults');
 const studioLayers = require('../services/studioLayerService');
 const StudioLayer = require('../models/StudioLayer');
 const { KINDS: LAYER_KINDS } = StudioLayer;
-const { ensureStudioLayers, restoreStudioLayers } = require('../seed/ensureStudioLayers');
+const { restoreStudioLayers } = require('../seed/ensureStudioLayers');
 
 exports.purposes = asyncHandler(async (_req, res) => {
   const purposes = await Purpose.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
@@ -34,43 +46,19 @@ exports.intentions = asyncHandler(async (req, res) => {
 });
 
 exports.recommendedBeads = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.intentionId)) return res.status(404).json({ message: 'Intention not found.' });
   const intention = await Intention.findById(req.params.intentionId).lean();
   if (!intention) return res.status(404).json({ message: 'Intention not found.' });
   const beads = await getRecommendedBeads(intention._id);
   res.json({ intention, beads });
 });
 
+// Default charms are seeded at startup (seed/ensureDefaultCharms via ensurePurposeCatalog);
+// GET handlers never write.
 exports.charms = asyncHandler(async (_req, res) => {
-  await seedDefaultCharms();
   const charms = await Charm.find({ isActive: true }).sort({ name: 1 }).lean();
   res.json({ charms });
 });
-
-async function seedDefaultCharms() {
-  const wanted = [
-    {
-      name: 'Sriyantra',
-      slug: 'sriyantra',
-      description: 'The Sriyantra charm — geometry of abundance at the clasp.',
-      isActive: true,
-      finishes: [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#D4AF37' }],
-    },
-    {
-      name: 'Om',
-      slug: 'om',
-      description: 'The Om charm — a quiet seal at the clasp.',
-      isActive: true,
-      finishes: [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#E8D5A3' }],
-    },
-  ];
-  for (const charm of wanted) {
-    await Charm.findOneAndUpdate(
-      { slug: charm.slug },
-      { $setOnInsert: charm },
-      { upsert: true, setDefaultsOnInsert: true }
-    );
-  }
-}
 
 exports.config = asyncHandler(async (_req, res) => {
   const config = withStudioDefaults(await BraceletConfig.findOne().lean());
@@ -138,6 +126,10 @@ exports.calibrate = asyncHandler(async (req, res) => {
   const { intentionId, dateOfBirth, includeZodiac, zodiacQty, charmId, finishKey, beadCount } = req.body || {};
   if (!intentionId) return res.status(400).json({ message: 'Choose an intention first.' });
   if (!dateOfBirth) return res.status(400).json({ message: 'Enter a date of birth.' });
+  if (!isObjectId(intentionId)) return res.status(400).json({ message: 'Choose a valid intention.' });
+  if (charmId != null && charmId !== '' && !isObjectId(charmId)) {
+    return res.status(400).json({ message: 'Choose a valid charm.' });
+  }
   const intention = await Intention.findById(intentionId).populate('purposeId', 'name slug').lean();
   if (!intention) return res.status(404).json({ message: 'Intention not found.' });
   const result = await calibrate({
@@ -146,23 +138,51 @@ exports.calibrate = asyncHandler(async (req, res) => {
     includeZodiac: Boolean(includeZodiac),
     zodiacQty,
     beadCount,
-    charmId,
+    charmId: charmId || undefined,
     finishKey,
   });
   res.json({ intention, purpose: intention.purposeId, ...result });
 });
 
 exports.quote = asyncHandler(async (req, res) => {
+  // Public endpoint: validate everything; client-supplied addOns are never accepted.
+  const { beads = [], charmId, finishKey, czStyle } = req.body || {};
+  if (!Array.isArray(beads)) return res.status(400).json({ message: 'beads must be an array.' });
+  if (beads.length > MAX_QUOTE_LINES) {
+    return res.status(400).json({ message: `Too many bead lines (max ${MAX_QUOTE_LINES}).` });
+  }
+  const lines = [];
+  for (const row of beads) {
+    if (!row || typeof row !== 'object' || !isObjectId(row.beadId)) {
+      return res.status(400).json({ message: 'Each bead needs a valid beadId.' });
+    }
+    const quantity = Number(row.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUOTE_QTY) {
+      return res.status(400).json({ message: 'Each bead quantity must be a positive whole number.' });
+    }
+    lines.push({ beadId: String(row.beadId), quantity });
+  }
+  if (charmId != null && charmId !== '' && !isObjectId(charmId)) {
+    return res.status(400).json({ message: 'Choose a valid charm.' });
+  }
+  if (czStyle != null && typeof czStyle !== 'string') {
+    return res.status(400).json({ message: 'Invalid CZ style.' });
+  }
+
   const config = withStudioDefaults(await BraceletConfig.findOne().lean());
-  const { beads = [], charmId, finishKey, addOns = 0, czStyle } = req.body;
   const charm = charmId ? await Charm.findById(charmId).lean() : await Charm.findOne({ isActive: true }).lean();
-  const finish = charm?.finishes?.find((f) => f.key === finishKey) || charm?.finishes?.[0];
-  const beadDocs = await Bead.find({ _id: { $in: beads.map((b) => b.beadId) } }).lean();
+  const finish =
+    charm?.finishes?.find((f) => typeof finishKey === 'string' && f.key === finishKey) || charm?.finishes?.[0];
+  const ids = [...new Set(lines.map((b) => b.beadId))];
+  const beadDocs = ids.length ? await Bead.find({ _id: { $in: ids } }).lean() : [];
   const byId = Object.fromEntries(beadDocs.map((b) => [String(b._id), b]));
-  const priced = beads.map((b) => ({
+  if (ids.some((id) => !byId[id])) {
+    return res.status(400).json({ message: 'One or more beads were not found.' });
+  }
+  const priced = lines.map((b) => ({
     ...b,
-    name: byId[String(b.beadId)]?.name,
-    pricePerBead: byId[String(b.beadId)]?.pricePerBead || 0,
+    name: byId[b.beadId].name,
+    pricePerBead: byId[b.beadId].pricePerBead || 0,
   }));
   const quote = calculateCustomTotal({
     beads: priced,
@@ -170,9 +190,10 @@ exports.quote = asyncHandler(async (req, res) => {
     packagingLabels: config.packagingLabels,
     czOptions: config.czOptions,
     czStyle: czStyle || config.defaultCzStyle,
-    addOns,
+    addOns: 0,
     beadLimit: config.beadLimit,
     minBeads: config.minBeads,
+    finish,
   });
   res.json({ quote, finish, charm, config });
 });
@@ -183,35 +204,42 @@ exports.adminPurposes = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSavePurpose = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'purpose');
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   const purpose = req.params.id
-    ? await Purpose.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await Purpose.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await Purpose.create(data);
+  if (!purpose) return res.status(404).json({ message: 'Not found.' });
   res.json({ purpose });
 });
 
 exports.adminDeletePurpose = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'purpose');
   await Purpose.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
 });
 
 exports.adminIntentions = asyncHandler(async (req, res) => {
+  if (req.query.purposeId && !isObjectId(req.query.purposeId)) return badId(res, 'purpose');
   const filter = req.query.purposeId ? { purposeId: req.query.purposeId } : {};
   const intentions = await Intention.find(filter).populate('purposeId', 'name').sort({ sortOrder: 1 }).lean();
   res.json({ intentions });
 });
 
 exports.adminSaveIntention = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'intention');
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   const intention = req.params.id
-    ? await Intention.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await Intention.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await Intention.create(data);
+  if (!intention) return res.status(404).json({ message: 'Not found.' });
   res.json({ intention });
 });
 
 exports.adminDeleteIntention = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'intention');
   await Intention.findByIdAndDelete(req.params.id);
   await IntentionBead.deleteMany({ intentionId: req.params.id });
   res.json({ ok: true });
@@ -223,6 +251,7 @@ exports.adminBeads = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSaveBead = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'bead');
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   if (typeof data.benefits === 'string') {
@@ -230,18 +259,21 @@ exports.adminSaveBead = asyncHandler(async (req, res) => {
   }
   if (data.grade === '') delete data.grade;
   const bead = req.params.id
-    ? await Bead.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await Bead.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await Bead.create(data);
+  if (!bead) return res.status(404).json({ message: 'Not found.' });
   res.json({ bead });
 });
 
 exports.adminDeleteBead = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'bead');
   await Bead.findByIdAndDelete(req.params.id);
   await IntentionBead.deleteMany({ beadId: req.params.id });
   res.json({ ok: true });
 });
 
 exports.adminMappings = asyncHandler(async (req, res) => {
+  if (req.query.intentionId && !isObjectId(req.query.intentionId)) return badId(res, 'intention');
   const filter = req.query.intentionId ? { intentionId: req.query.intentionId } : {};
   const mappings = await IntentionBead.find(filter)
     .populate('intentionId', 'name')
@@ -252,14 +284,17 @@ exports.adminMappings = asyncHandler(async (req, res) => {
 });
 
 exports.adminSaveMapping = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'mapping');
   const data = cleanBody(req.body);
   const mapping = req.params.id
-    ? await IntentionBead.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await IntentionBead.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await IntentionBead.create(data);
+  if (!mapping) return res.status(404).json({ message: 'Not found.' });
   res.json({ mapping });
 });
 
 exports.adminDeleteMapping = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'mapping');
   await IntentionBead.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
 });
@@ -270,18 +305,21 @@ exports.adminMulank = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSaveMulank = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'mapping');
   const data = cleanBody(req.body);
   const mapping = req.params.id
-    ? await MulankCrystal.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await MulankCrystal.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await MulankCrystal.findOneAndUpdate(
         { number: data.number },
         data,
-        { new: true, upsert: true, setDefaultsOnInsert: true }
+        UPSERT_OPTS
       );
+  if (!mapping) return res.status(404).json({ message: 'Not found.' });
   res.json({ mapping });
 });
 
 exports.adminDeleteMulank = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'mapping');
   await MulankCrystal.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
 });
@@ -292,43 +330,48 @@ exports.adminZodiac = asyncHandler(async (_req, res) => {
 });
 
 exports.adminSaveZodiac = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'mapping');
   const data = cleanBody(req.body);
   if (!data.slug && data.sign) data.slug = slugifyName(data.sign);
   const mapping = req.params.id
-    ? await ZodiacBead.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await ZodiacBead.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await ZodiacBead.findOneAndUpdate(
         { slug: data.slug },
         data,
-        { new: true, upsert: true, setDefaultsOnInsert: true }
+        UPSERT_OPTS
       );
+  if (!mapping) return res.status(404).json({ message: 'Not found.' });
   res.json({ mapping });
 });
 
 exports.adminDeleteZodiac = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'mapping');
   await ZodiacBead.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
 });
 
 exports.adminCharms = asyncHandler(async (_req, res) => {
-  await seedDefaultCharms();
   const charms = await Charm.find().sort({ name: 1 }).lean();
   const config = withStudioDefaults(await BraceletConfig.findOne().lean());
   res.json({ charms, config });
 });
 
 exports.adminSaveCharm = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'charm');
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   if (!Array.isArray(data.finishes) || !data.finishes.length) {
     data.finishes = [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#D4AF37' }];
   }
   const charm = req.params.id
-    ? await Charm.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await Charm.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await Charm.create(data);
+  if (!charm) return res.status(404).json({ message: 'Not found.' });
   res.json({ charm });
 });
 
 exports.adminDeleteCharm = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'charm');
   await Charm.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
 });
@@ -342,20 +385,25 @@ exports.adminSaveConfig = asyncHandler(async (req, res) => {
   if (Array.isArray(data.beadSizesMm)) {
     data.beadSizesMm = data.beadSizesMm.map(Number).filter((n) => Number.isFinite(n) && n > 0);
   }
+  let config = await BraceletConfig.findOne();
   if (Array.isArray(data.czOptions)) {
     data.czOptions = data.czOptions.map((row) => ({
       ...row,
       price: Number(row.price) || 0,
     }));
-    const cz = data.czOptions.find((row) => row.key === 'cz' || row.key !== 'round');
+    // packaging.cz mirrors the 'cz' option and packaging.roundCz mirrors the 'round' option.
+    const cz = data.czOptions.find((row) => row.key === 'cz');
     const round = data.czOptions.find((row) => row.key === 'round');
+    const currentPackaging = config?.packaging
+      ? (typeof config.packaging.toObject === 'function' ? config.packaging.toObject() : { ...config.packaging })
+      : {};
     data.packaging = {
+      ...currentPackaging,
       ...(data.packaging || {}),
-      cz: cz ? Number(cz.price) || 0 : data.packaging?.cz,
-      roundCz: round ? Number(round.price) || 0 : data.packaging?.roundCz,
     };
+    if (cz) data.packaging.cz = Number(cz.price) || 0;
+    if (round) data.packaging.roundCz = Number(round.price) || 0;
   }
-  let config = await BraceletConfig.findOne();
   if (!config) config = await BraceletConfig.create(data);
   else {
     Object.assign(config, data);
@@ -391,29 +439,31 @@ function normalizeLayerBody(body) {
 }
 
 exports.adminLayers = asyncHandler(async (req, res) => {
-  await ensureStudioLayers();
-  const kind = req.query.kind;
+  // Layers are seeded at startup; this read never writes.
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : '';
   const filter = kind ? { kind } : {};
   const items = await StudioLayer.find(filter).sort({ kind: 1, sortOrder: 1, number: 1, name: 1 }).lean();
   res.json({ items });
 });
 
 exports.adminSaveLayer = asyncHandler(async (req, res) => {
+  if (req.params.id && !isObjectId(req.params.id)) return badId(res, 'layer');
   const data = normalizeLayerBody(req.body);
   if (!LAYER_KINDS.includes(data.kind)) return res.status(400).json({ message: 'Choose a catalog kind.' });
   if (!data.slug) return res.status(400).json({ message: 'A slug or name is required.' });
   const item = req.params.id
-    ? await StudioLayer.findByIdAndUpdate(req.params.id, data, { new: true })
+    ? await StudioLayer.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
     : await StudioLayer.findOneAndUpdate(
         { kind: data.kind, slug: data.slug },
         data,
-        { new: true, upsert: true, setDefaultsOnInsert: true }
+        UPSERT_OPTS
       );
   if (!item) return res.status(404).json({ message: 'Catalog row not found.' });
   res.json({ item });
 });
 
 exports.adminDeleteLayer = asyncHandler(async (req, res) => {
+  if (!isObjectId(req.params.id)) return badId(res, 'layer');
   await StudioLayer.findByIdAndDelete(req.params.id);
   res.json({ ok: true });
 });

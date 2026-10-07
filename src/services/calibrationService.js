@@ -5,6 +5,7 @@ const BraceletConfig = require('../models/BraceletConfig');
 const Charm = require('../models/Charm');
 const { getRecommendedBeads } = require('./recommendationService');
 const { calculateCustomTotal } = require('./pricingService');
+const { withStudioDefaults } = require('../data/studioConfigDefaults');
 const {
   MULANK_FALLBACK,
   parseDateParts,
@@ -101,7 +102,8 @@ function quantitiesFromLayout(layout) {
  * 2. The first intention crystal is the primary; its count equals Mulank.
  * 3. Beads follow a fixed repeating pattern (A B C A B C…) around the bracelet.
  * 4. Remaining slots are filled round-robin with the other intention crystals.
- * 5. If includeZodiac, zodiac beads sit in a fixed clasp pair either side of the charm.
+ * 5. If includeZodiac, zodiac beads replace the end slots either side of the clasp/charm
+ *    (positions 1, N, 2, N-1, …), so they can reduce the count of whichever crystals sat there.
  */
 function claspIndices(limit, want) {
   const out = [];
@@ -179,14 +181,29 @@ function buildLayout({ intentionBeads, mulank, beadLimit, zodiacBead, includeZod
   return layout.map((slot, i) => ({ ...slot, position: i + 1 }));
 }
 
-function explainCalibration({ mulank, beadLimit, qtyPrimary, zodiacQty, includeZodiac, zodiac }) {
+function explainCalibration({ mulank, beadLimit, layout, includeZodiac, zodiac, primaryName: primaryLabel }) {
+  const qtyPrimaryTarget = Math.min(Math.max(1, Number(mulank) || 1), beadLimit);
+  const primarySlots = layout.filter((s) => s.role === 'intention-primary');
+  const qtyPrimary = primarySlots.length;
+  const primaryName = primaryLabel || primarySlots[0]?.name || 'the primary crystal';
+  const otherCount = new Set(layout.filter((s) => s.role === 'intention').map((s) => String(s.beadId))).size;
+  const zodiacPlaced = layout.filter((s) => s.role === 'zodiac').length;
+
   const parts = [
-    `Mulank ${mulank} sets the primary crystal count at ${qtyPrimary} on a ${beadLimit}-bead strand.`,
-    `Those stones follow a fixed repeating pattern around the bracelet, starting at the charm.`,
-    'The other crystals chosen for this intention fill the remaining positions in the same sequence.',
+    `Mulank ${mulank} sets the primary crystal (${primaryName}) count at ${qtyPrimaryTarget} on a ${beadLimit}-bead strand.`,
   ];
-  if (includeZodiac && zodiac?.sign) {
-    parts.push(`${zodiac.sign} beads (${zodiacQty}) sit either side of the charm.`);
+  if (otherCount > 0) {
+    parts.push(
+      'The intention crystals are woven in a repeating pattern (A B C A B C…) starting at the first bead beside the clasp; once the primary count is used up, the other crystals continue the pattern to fill the strand.'
+    );
+  } else {
+    parts.push('Only one crystal is mapped to this intention, so it fills the whole strand.');
+  }
+  if (includeZodiac && zodiac?.sign && zodiacPlaced > 0) {
+    parts.push(`${zodiac.sign} beads (${zodiacPlaced}) take the end positions either side of the clasp and charm.`);
+    if (qtyPrimary !== qtyPrimaryTarget) {
+      parts.push(`Because of this, ${primaryName} appears ${qtyPrimary} time${qtyPrimary === 1 ? '' : 's'} in the final strand.`);
+    }
   }
   return parts.join(' ');
 }
@@ -203,15 +220,19 @@ async function calibrate({
   parseDateParts(dateOfBirth);
   const mulank = mulankFromDate(dateOfBirth);
   const bhagyank = bhagyankFromDate(dateOfBirth);
-  const [intentionBeads, mulankCrystal, zodiac, config] = await Promise.all([
+  const [intentionBeads, mulankCrystal, zodiac, rawConfig] = await Promise.all([
     getRecommendedBeads(intentionId),
     resolveMulankCrystal(mulank),
     resolveZodiac(dateOfBirth),
     BraceletConfig.findOne().lean(),
   ]);
+  const config = withStudioDefaults(rawConfig);
 
   const chosen = Number(beadCount);
-  const beadLimit = [16, 18, 22].includes(chosen) ? chosen : (config?.beadLimit || 18);
+  // Never lay out more beads than the cart will accept.
+  const maxBeads = Number(config?.beadLimit) || 22;
+  const preferred = [16, 18, 22].includes(chosen) ? chosen : maxBeads;
+  const beadLimit = Math.max(1, Math.min(preferred, maxBeads));
   const qtyZ = Number.isFinite(Number(zodiacQty)) && Number(zodiacQty) > 0
     ? Number(zodiacQty)
     : (config?.zodiacBeadCount || 2);
@@ -229,16 +250,19 @@ async function calibrate({
     : await Charm.findOne({ isActive: true }).lean();
   const finish = charm?.finishes?.find((f) => f.key === finishKey) || charm?.finishes?.[0];
   const beads = quantitiesFromLayout(layout);
+  // Mirror the cart pricing path (cartController.buildCustomSnapshot) so the calibration quote
+  // matches what the customer is charged.
   const quote = calculateCustomTotal({
     beads,
-    packaging: config?.packaging,
-    czStyle: 'cz',
+    packaging: config.packaging,
+    packagingLabels: config.packagingLabels,
+    czOptions: config.czOptions,
+    czStyle: config.defaultCzStyle || 'cz',
     addOns: 0,
     beadLimit,
-    minBeads: config?.minBeads || 1,
+    minBeads: config.minBeads || 1,
+    finish,
   });
-
-  const qtyPrimary = layout.filter((s) => s.role === 'intention-primary').length;
 
   return {
     dateOfBirth,
@@ -254,10 +278,10 @@ async function calibrate({
     explanation: explainCalibration({
       mulank,
       beadLimit,
-      qtyPrimary,
-      zodiacQty: qtyZ,
-      includeZodiac,
+      layout,
+      includeZodiac: Boolean(includeZodiac),
       zodiac,
+      primaryName: intentionBeads.find(Boolean)?.name,
     }),
     quote,
     charm,

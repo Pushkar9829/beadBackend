@@ -5,18 +5,86 @@ const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/cl
 const uploadDir = path.join(__dirname, '../../uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-const EXT_BY_MIME = {
-  'image/jpeg': '.jpg',
-  'image/jpg': '.jpg',
-  'image/png': '.png',
-  'image/webp': '.webp',
-  'image/gif': '.gif',
-  'image/svg+xml': '.svg',
-  'image/avif': '.avif',
-  'video/mp4': '.mp4',
-  'video/webm': '.webm',
-  'video/quicktime': '.mov',
+// Whitelist of accepted upload types. SVG (scriptable) and anything else is rejected.
+const ALLOWED_TYPES = {
+  'image/jpeg': { ext: '.jpg', kind: 'image' },
+  'image/png': { ext: '.png', kind: 'image' },
+  'image/webp': { ext: '.webp', kind: 'image' },
+  'image/gif': { ext: '.gif', kind: 'image' },
+  'image/avif': { ext: '.avif', kind: 'image' },
+  'video/mp4': { ext: '.mp4', kind: 'video' },
+  'video/webm': { ext: '.webm', kind: 'video' },
+  'video/quicktime': { ext: '.mov', kind: 'video' },
 };
+
+const MIME_ALIASES = { 'image/jpg': 'image/jpeg', 'image/pjpeg': 'image/jpeg', 'image/x-png': 'image/png' };
+
+const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 40 * 1024 * 1024;
+
+const MP4_BRANDS = new Set(['isom', 'iso2', 'iso3', 'iso4', 'iso5', 'iso6', 'mp41', 'mp42', 'avc1', 'M4V ', 'M4VP', 'dash', 'mmp4', 'MSNV', 'f4v ']);
+
+function normalizeMime(mime) {
+  const m = String(mime || '').toLowerCase().trim();
+  return MIME_ALIASES[m] || m;
+}
+
+function ascii(buf, start, end) {
+  return buf.subarray(start, end).toString('latin1');
+}
+
+/** Detects the real file type from magic bytes. Returns a whitelisted mime or null. */
+function sniffMime(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (ascii(buf, 0, 4) === 'GIF8') return 'image/gif';
+  if (ascii(buf, 0, 4) === 'RIFF' && ascii(buf, 8, 12) === 'WEBP') return 'image/webp';
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return 'video/webm';
+  if (ascii(buf, 4, 8) === 'ftyp') {
+    const boxSize = Math.min(buf.readUInt32BE(0) || 0, buf.length, 256);
+    const major = ascii(buf, 8, 12);
+    const brands = [major];
+    for (let i = 16; i + 4 <= boxSize; i += 4) brands.push(ascii(buf, i, i + 4));
+    if (brands.includes('avif') || brands.includes('avis')) return 'image/avif';
+    if (major === 'qt  ') return 'video/quicktime';
+    if (brands.some((b) => MP4_BRANDS.has(b))) return 'video/mp4';
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Verifies an uploaded file: declared mime must be whitelisted, magic bytes must match it,
+ * and the size must be within the per-kind cap. Returns { mime, ext, kind } or throws (status 400/413).
+ */
+function verifyUpload(file) {
+  const fail = (message, status = 400) => {
+    const err = new Error(message);
+    err.status = status;
+    return err;
+  };
+  if (!file || !file.buffer) throw fail('No file uploaded.');
+  const declared = normalizeMime(file.mimetype);
+  if (!ALLOWED_TYPES[declared]) throw fail('Only JPEG, PNG, WebP, GIF, AVIF images and MP4/WebM/MOV videos are allowed.');
+  const detected = sniffMime(file.buffer);
+  if (!detected) throw fail('The file contents do not match an allowed image or video type.');
+  const isoPair = new Set(['video/mp4', 'video/quicktime']);
+  if (detected !== declared && !(isoPair.has(detected) && isoPair.has(declared))) {
+    throw fail('The file contents do not match its declared type.');
+  }
+  const info = ALLOWED_TYPES[detected];
+  const size = file.size ?? file.buffer.length;
+  if (info.kind === 'image' && size > MAX_IMAGE_BYTES) throw fail('Image is too large (max 15MB).', 413);
+  if (info.kind === 'video' && size > MAX_VIDEO_BYTES) throw fail('Video is too large (max 40MB).', 413);
+  return { mime: detected, ext: info.ext, kind: info.kind };
+}
+
+/** Strips path components / control chars from a client-supplied original filename (display only). */
+function safeOriginalName(name) {
+  const base = String(name || '').split(/[\\/]/).pop() || '';
+  return base.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '').trim().slice(0, 200) || 'upload';
+}
 
 function bucket() {
   return (
@@ -50,15 +118,10 @@ function s3Client() {
   return cachedClient;
 }
 
-function fileExt(file) {
-  const fromName = path.extname(file.originalname || '').toLowerCase();
-  if (fromName && fromName.length <= 10) return fromName;
-  return EXT_BY_MIME[file.mimetype] || '.bin';
-}
-
-function objectKey(file, folder = 'other') {
-  const safeFolder = String(folder || 'other').replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'other';
-  const name = `${Date.now()}-${Math.round(Math.random() * 1e9)}${fileExt(file)}`;
+function objectKey(ext, folder = 'other') {
+  const crypto = require('crypto');
+  const safeFolder = String(folder || 'other').replace(/[^a-z0-9_-]/gi, '').toLowerCase().slice(0, 40) || 'other';
+  const name = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
   return { key: `media/${safeFolder}/${name}`, filename: name };
 }
 
@@ -75,26 +138,29 @@ function publicUrl(key) {
 
 async function putFile(file, { folder = 'other' } = {}) {
   if (!file) throw new Error('No file provided');
-  const { key, filename } = objectKey(file, folder);
   const body = file.buffer;
   if (!body) throw new Error('Upload buffer missing');
+  // Extension and Content-Type come only from the verified (magic-byte) type, never the client.
+  const verified = file.verifiedType || verifyUpload(file);
+  const { key, filename } = objectKey(verified.ext, folder);
 
   if (s3Enabled()) {
     const params = {
       Bucket: bucket(),
       Key: key,
       Body: body,
-      ContentType: file.mimetype || 'application/octet-stream',
+      ContentType: verified.mime,
+      ContentDisposition: 'inline',
       CacheControl: 'public, max-age=31536000, immutable',
     };
     if (process.env.S3_ACL) params.ACL = process.env.S3_ACL;
     await s3Client().send(new PutObjectCommand(params));
-    return { storage: 's3', key, filename, url: publicUrl(key) };
+    return { storage: 's3', key, filename, url: publicUrl(key), mimeType: verified.mime, size: body.length };
   }
 
   const dest = path.join(uploadDir, filename);
   fs.writeFileSync(dest, body);
-  return { storage: 'local', key: filename, filename, url: `/uploads/${filename}` };
+  return { storage: 'local', key: filename, filename, url: `/uploads/${filename}`, mimeType: verified.mime, size: body.length };
 }
 
 const MIME_BY_EXT = {
@@ -153,8 +219,8 @@ async function deleteStored({ storage, key, filename, url } = {}) {
       await s3Client().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
       return;
     }
-    const localName = filename || (url && String(url).startsWith('/uploads/') ? path.basename(url) : '');
-    if (!localName) return;
+    const localName = path.basename(String(filename || (url && String(url).startsWith('/uploads/') ? url : '')));
+    if (!localName || localName === '.' || localName === '..') return;
     const dest = path.join(uploadDir, localName);
     if (fs.existsSync(dest)) fs.unlinkSync(dest);
   } catch (err) {
@@ -162,4 +228,18 @@ async function deleteStored({ storage, key, filename, url } = {}) {
   }
 }
 
-module.exports = { s3Enabled, putFile, putLocalFile, deleteStored, uploadDir, publicUrl, bucket };
+module.exports = {
+  s3Enabled,
+  putFile,
+  putLocalFile,
+  deleteStored,
+  uploadDir,
+  publicUrl,
+  bucket,
+  verifyUpload,
+  sniffMime,
+  safeOriginalName,
+  ALLOWED_TYPES,
+  MAX_IMAGE_BYTES,
+  MAX_VIDEO_BYTES,
+};

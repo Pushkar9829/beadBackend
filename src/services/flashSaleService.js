@@ -55,6 +55,10 @@ function applySaleToProduct(product, saleMap) {
 }
 
 async function recordFlashSaleOrder(order) {
+  if (!order?._id) return;
+  const Order = require('../models/Order');
+  const claim = await Order.updateOne({ _id: order._id, flashSaleRecorded: { $ne: true } }, { $set: { flashSaleRecorded: true } });
+  if (!claim.modifiedCount) return; // already counted for this order
   const now = new Date(order.createdAt || Date.now());
   const sales = await FlashSale.find(saleWindowMatch(now));
   if (!sales.length) return;
@@ -73,10 +77,7 @@ async function recordFlashSaleOrder(order) {
       if (original > (line.lineTotal || 0)) discount += original - (line.lineTotal || 0);
     }
     if (!units) continue;
-    sale.unitsSold = (sale.unitsSold || 0) + units;
-    sale.revenue = (sale.revenue || 0) + revenue;
-    sale.discountCost = (sale.discountCost || 0) + discount;
-    await sale.save();
+    await FlashSale.updateOne({ _id: sale._id }, { $inc: { unitsSold: units, revenue, discountCost: discount } });
   }
 }
 

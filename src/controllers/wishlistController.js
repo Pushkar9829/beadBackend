@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
 const { asyncHandler } = require('../utils/asyncHandler');
@@ -22,7 +23,7 @@ exports.get = asyncHandler(async (req, res) => {
 
 exports.add = asyncHandler(async (req, res) => {
   const productId = req.body.productId;
-  if (!productId) return res.status(400).json({ message: 'productId is required.' });
+  if (!mongoose.isObjectIdOrHexString(productId)) return res.status(400).json({ message: 'productId is required.' });
   const doc = await getOrCreate(req.user._id);
   if (!doc.items.some((i) => String(i.productId) === String(productId))) {
     doc.items.unshift({ productId });
@@ -44,7 +45,9 @@ exports.remove = asyncHandler(async (req, res) => {
 });
 
 exports.merge = asyncHandler(async (req, res) => {
-  const incoming = Array.isArray(req.body.productIds) ? req.body.productIds : [];
+  const incoming = (Array.isArray(req.body.productIds) ? req.body.productIds : [])
+    .filter((id) => mongoose.isObjectIdOrHexString(id))
+    .slice(0, 200);
   const doc = await getOrCreate(req.user._id);
   const have = new Set(doc.items.map((i) => String(i.productId)));
   for (const id of incoming) {

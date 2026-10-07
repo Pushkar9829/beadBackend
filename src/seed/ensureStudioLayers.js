@@ -1,5 +1,4 @@
 require('dotenv').config();
-const { connectDb } = require('../config/db');
 const StudioLayer = require('../models/StudioLayer');
 const { catalogFor } = require('../data/studioLayers');
 
@@ -28,16 +27,29 @@ function toDoc(kind, item, index) {
   };
 }
 
+const isDuplicateKey = (err) =>
+  err?.code === 11000 || (Array.isArray(err?.writeErrors) && err.writeErrors.every((e) => (e.code ?? e.err?.code) === 11000));
+
+/**
+ * Startup-only, insert-only seeding of the default studio layer catalogs.
+ * A kind is seeded only when it has no rows at all, so admin edits/deletions are never
+ * overwritten. Duplicate-key errors (e.g. two instances booting at once) are tolerated.
+ */
 async function ensureStudioLayers() {
   const created = [];
   for (const kind of ['zodiac', 'numerology', 'planetary', 'profession']) {
     const count = await StudioLayer.countDocuments({ kind });
     if (count > 0) continue;
-    const defaults = catalogFor(kind);
-    const docs = defaults.map((item, i) => toDoc(kind, item, i));
+    const docs = catalogFor(kind).map((item, i) => toDoc(kind, item, i));
     if (!docs.length) continue;
-    await StudioLayer.insertMany(docs);
-    created.push(...docs.map((doc) => `${kind}:${doc.slug}`));
+    try {
+      const inserted = await StudioLayer.insertMany(docs, { ordered: false });
+      created.push(...inserted.map((doc) => `${kind}:${doc.slug}`));
+    } catch (err) {
+      if (!isDuplicateKey(err)) throw err;
+      const ok = err.insertedDocs || [];
+      created.push(...ok.map((doc) => `${kind}:${doc.slug}`));
+    }
   }
   return { created };
 }
@@ -47,13 +59,14 @@ async function restoreStudioLayers(kind) {
   if (!defaults.length) return { restored: 0 };
   await StudioLayer.deleteMany({ kind });
   const docs = defaults.map((item, i) => toDoc(kind, item, i));
-  if (docs.length) await StudioLayer.insertMany(docs);
+  if (docs.length) await StudioLayer.insertMany(docs, { ordered: false });
   return { restored: docs.length };
 }
 
 module.exports = { ensureStudioLayers, restoreStudioLayers, toDoc };
 
 if (require.main === module) {
+  const { connectDb } = require('../config/db');
   connectDb()
     .then(() => ensureStudioLayers())
     .then((result) => {

@@ -5,7 +5,8 @@ const webhookEventSchema = new mongoose.Schema(
     provider: { type: String, enum: ['cashfree', 'ithink'], required: true },
     eventId: { type: String, default: '' },
     eventType: { type: String, default: '' },
-    status: { type: String, enum: ['applied', 'ignored', 'failed'], default: 'applied' },
+    // processing = claimed by a worker (dedupe lock); failed = may be re-claimed by a provider retry.
+    status: { type: String, enum: ['processing', 'applied', 'ignored', 'mismatch', 'failed'], default: 'applied' },
     ref: { type: String, default: '' },
     message: { type: String, default: '' },
   },

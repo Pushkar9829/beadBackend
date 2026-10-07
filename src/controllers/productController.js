@@ -1,7 +1,7 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Collection = require('../models/Collection');
-const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
+const { asyncHandler, slugifyName, cleanBody, toStr, escapeRegex, UPDATE_OPTS } = require('../utils/asyncHandler');
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
 const { productsForCollection } = require('../services/collectionService');
@@ -21,54 +21,51 @@ function withPublicFields(product, saleMap) {
 
 exports.listPublic = asyncHandler(async (req, res) => {
   const filter = { isActive: true };
-  if (req.query.family) filter.family = req.query.family;
+  const family = toStr(req.query.family, 40);
+  const categorySlug = toStr(req.query.category, 120);
+  const collectionSlug = toStr(req.query.collection, 120);
+  if (family) filter.family = family;
   if (req.query.featured === 'true') filter.featured = true;
-  if (req.query.category) {
-    const cat = await Category.findOne({ slug: req.query.category });
+  if (categorySlug) {
+    const cat = await Category.findOne({ slug: categorySlug });
     if (cat) {
       const children = await Category.find({ parentId: cat._id }).select('_id');
       const ids = [cat._id, ...children.map((c) => c._id)];
       filter.categoryId = { $in: ids };
     }
   }
+  // Always paginated: callers without ?page get the first page with a generous default limit.
+  const { page, limit, skip } = parsePage(req, req.query.page ? 24 : 500, 500);
   const saleMap = await getSalePriceMap();
-  if (req.query.collection) {
-    const collection = await Collection.findOne({ slug: req.query.collection, isActive: true }).lean();
+  if (collectionSlug) {
+    const collection = await Collection.findOne({ slug: collectionSlug, isActive: true })
+      .select('name slug description image sortOrder ruleType ruleConfig')
+      .lean();
     if (collection) {
       const all = (await productsForCollection(collection, filter.family ? { family: filter.family } : {})).map((p) =>
         withPublicFields(p, saleMap)
       );
-      if (req.query.page) {
-        const { page, limit, skip } = parsePage(req, 24);
-        return res.json({
-          products: all.slice(skip, skip + limit),
-          collection,
-          pagination: pageMeta(all.length, page, limit),
-        });
-      }
-      return res.json({ products: all, collection });
+      const { ruleConfig, ...publicCollection } = collection;
+      return res.json({
+        products: all.slice(skip, skip + limit),
+        collection: publicCollection,
+        pagination: pageMeta(all.length, page, limit),
+      });
     }
   }
   const sort = req.query.featured === 'true' ? { featuredSort: 1, createdAt: -1 } : { createdAt: -1 };
-  if (req.query.page) {
-    const { page, limit, skip } = parsePage(req, 24);
-    const [rows, total] = await Promise.all([
-      Product.find(filter).populate('categoryId', 'name slug family').sort(sort).skip(skip).limit(limit).lean(),
-      Product.countDocuments(filter),
-    ]);
-    return res.json({
-      products: rows.map((p) => withPublicFields(p, saleMap)),
-      pagination: pageMeta(total, page, limit),
-    });
-  }
-  const products = (await Product.find(filter).populate('categoryId', 'name slug family').sort(sort).lean()).map((p) =>
-    withPublicFields(p, saleMap)
-  );
-  res.json({ products });
+  const [rows, total] = await Promise.all([
+    Product.find(filter).populate('categoryId', 'name slug family').sort(sort).skip(skip).limit(limit).lean(),
+    Product.countDocuments(filter),
+  ]);
+  res.json({
+    products: rows.map((p) => withPublicFields(p, saleMap)),
+    pagination: pageMeta(total, page, limit),
+  });
 });
 
 exports.getBySlug = asyncHandler(async (req, res) => {
-  const product = await Product.findOne({ slug: req.params.slug, isActive: true })
+  const product = await Product.findOne({ slug: toStr(req.params.slug, 200), isActive: true })
     .populate('categoryId', 'name slug family seo')
     .populate('collectionIds', 'name slug')
     .lean();
@@ -85,12 +82,13 @@ function makeSku(name) {
 exports.adminList = asyncHandler(async (req, res) => {
   const sort = parseSort(req, ['createdAt', 'name', 'price', 'stock'], '-createdAt');
   const filter = {};
-  if (req.query.q) {
-    const { escapeRegex } = require('../utils/asyncHandler');
-    const rx = new RegExp(escapeRegex(req.query.q), 'i');
+  const q = toStr(req.query.q, 100);
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), 'i');
     filter.$or = [{ name: rx }, { sku: rx }];
   }
-  if (req.query.family && req.query.family !== 'all') filter.family = req.query.family;
+  const family = toStr(req.query.family, 40);
+  if (family && family !== 'all') filter.family = family;
   const query = Product.find(filter)
     .populate('categoryId', 'name slug')
     .populate('collectionIds', 'name slug')
@@ -103,20 +101,20 @@ exports.adminList = asyncHandler(async (req, res) => {
       pagination: pageMeta(total, page, limit),
     });
   }
-  const products = (await query.lean()).map((p) => ({ ...p, attributes: asAttributes(p.attributes) }));
+  const products = (await query.limit(2000).lean()).map((p) => ({ ...p, attributes: asAttributes(p.attributes) }));
   res.json({ products, pagination: pageMeta(products.length, 1, products.length || 1) });
 });
 
 exports.adminCreate = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
-  if (!data.sku) data.sku = makeSku(data.name);
+  if (!data.sku) data.sku = makeSku(toStr(data.name));
   const product = await Product.create(data);
   res.status(201).json({ product });
 });
 
 exports.adminUpdate = asyncHandler(async (req, res) => {
-  const product = await Product.findByIdAndUpdate(req.params.id, cleanBody(req.body), { new: true });
+  const product = await Product.findByIdAndUpdate(req.params.id, { $set: cleanBody(req.body) }, UPDATE_OPTS);
   if (!product) return res.status(404).json({ message: 'Product not found.' });
   res.json({ product });
 });

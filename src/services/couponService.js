@@ -34,11 +34,11 @@ async function validateCoupon({ coupon, user, items, subtotal }) {
     }
   }
   if (coupon.audience === 'new' && user?._id) {
-    const prior = await Order.countDocuments({ userId: user._id, status: { $nin: ['cancelled'] } });
+    const prior = await Order.countDocuments({ userId: user._id, status: { $nin: ['cancelled', 'pending_payment'] } });
     if (prior > 0) return { ok: false, message: 'This coupon is for first orders only.' };
   }
   if (coupon.audience === 'existing' && user?._id) {
-    const prior = await Order.countDocuments({ userId: user._id, status: { $nin: ['cancelled'] } });
+    const prior = await Order.countDocuments({ userId: user._id, status: { $nin: ['cancelled', 'pending_payment'] } });
     if (prior === 0) return { ok: false, message: 'This coupon is for returning customers.' };
   }
   if (coupon.applyTo === 'category' && (coupon.categoryIds || []).length) {
@@ -81,20 +81,65 @@ function computeDiscount(coupon, subtotal, items) {
   return Math.max(0, Math.min(base, Math.round(discount)));
 }
 
+function couponError(message) {
+  const err = new Error(message);
+  err.status = 409;
+  return err;
+}
+
+// Records a coupon redemption atomically. Idempotent per order; enforces usageLimit and
+// perCustomerLimit even under concurrent checkouts. Throws 409 when a limit is exceeded.
 async function recordUsage({ coupon, user, order, discount }) {
-  if (!coupon) return;
-  await CouponUsage.create({
-    couponId: coupon._id,
-    userId: user?._id,
-    orderId: order._id,
-    code: coupon.code,
-    discount,
-    orderTotal: order.total,
-  });
-  coupon.usedCount = (coupon.usedCount || 0) + 1;
-  coupon.revenueGenerated = (coupon.revenueGenerated || 0) + (order.total || 0);
-  coupon.discountCost = (coupon.discountCost || 0) + (discount || 0);
-  await coupon.save();
+  if (!coupon) return null;
+  let usage;
+  try {
+    usage = await CouponUsage.create({
+      couponId: coupon._id,
+      userId: user?._id,
+      orderId: order._id,
+      code: coupon.code,
+      discount,
+      orderTotal: order.total,
+    });
+  } catch (err) {
+    if (err.code === 11000) return null; // already recorded for this order
+    throw err;
+  }
+
+  if (user?._id) {
+    const cap = coupon.perCustomerLimit ?? 1;
+    const used = await CouponUsage.countDocuments({ couponId: coupon._id, userId: user._id });
+    if (used > cap) {
+      await CouponUsage.deleteOne({ _id: usage._id });
+      throw couponError('You have already used this coupon.');
+    }
+  }
+
+  const limitFilter = coupon.usageLimit != null
+    ? { $expr: { $lt: [{ $ifNull: ['$usedCount', 0] }, coupon.usageLimit] } }
+    : {};
+  const updated = await Coupon.findOneAndUpdate(
+    { _id: coupon._id, ...limitFilter },
+    { $inc: { usedCount: 1, revenueGenerated: order.total || 0, discountCost: discount || 0 } },
+    { returnDocument: 'after' }
+  );
+  if (!updated) {
+    await CouponUsage.deleteOne({ _id: usage._id });
+    throw couponError('This coupon has reached its usage limit.');
+  }
+  return usage;
+}
+
+// Reverses recordUsage for a cancelled/refunded order. Safe to call more than once.
+async function releaseUsage(order) {
+  if (!order?._id) return false;
+  const usage = await CouponUsage.findOneAndDelete({ orderId: order._id });
+  if (!usage) return false;
+  await Coupon.updateOne(
+    { _id: usage.couponId },
+    { $inc: { usedCount: -1, revenueGenerated: -(usage.orderTotal || 0), discountCost: -(usage.discount || 0) } }
+  );
+  return true;
 }
 
 function publicCouponView(coupon) {
@@ -145,5 +190,6 @@ module.exports = {
   validateCoupon,
   computeDiscount,
   recordUsage,
+  releaseUsage,
   listAvailableCoupons,
 };

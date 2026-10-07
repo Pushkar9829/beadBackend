@@ -1,97 +1,70 @@
+const mongoose = require('mongoose');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
-const Bead = require('../models/Bead');
-const Charm = require('../models/Charm');
-const BraceletConfig = require('../models/BraceletConfig');
-const { calculateCustomTotal } = require('../services/pricingService');
-const { withStudioDefaults } = require('../data/studioConfigDefaults');
+const { buildCustomSnapshot } = require('../services/pricingService');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { quote: quoteCart } = require('../services/checkoutService');
-const { findUsableCoupon, validateCoupon } = require('../services/couponService');
 
 async function getOrCreateCart(userId) {
   let cart = await Cart.findOne({ userId });
   if (!cart) cart = await Cart.create({ userId, items: [] });
+  // Heal legacy lines saved before quantity validation existed so later saves don't fail.
+  for (const item of cart.items) {
+    const q = Math.floor(Number(item.quantity) || 1);
+    if (q !== item.quantity || q < 1 || q > 99) item.quantity = Math.min(99, Math.max(1, q));
+    if (!(item.unitPrice >= 0)) item.unitPrice = 0;
+    item.lineTotal = item.quantity * item.unitPrice;
+  }
   return cart;
 }
 
-async function buildCustomSnapshot(payload) {
-  const config = withStudioDefaults(await BraceletConfig.findOne().lean());
-  const charm = payload.charmId ? await Charm.findById(payload.charmId).lean() : null;
-  if (config.charmRequired !== false && !charm) {
-    const err = new Error('Please choose a charm.');
-    err.status = 400;
-    throw err;
-  }
-  const finish = charm?.finishes?.find((f) => f.key === payload.finishKey) || charm?.finishes?.[0];
-  const braceletName =
-    payload.intention?.braceletName ||
-    payload.intention?.name ||
-    'Custom bracelet';
-  const pieceName = payload.snapshot?.name || (charm?.name ? `${braceletName} · ${charm.name}` : braceletName);
-  const wristSize = payload.wristSize || payload.snapshot?.wristSize || config.defaultWristSize;
+const MAX_PRODUCT_QTY = 99;
+const MAX_CART_LINES = 50;
 
-  const beadIds = (payload.beads || []).map((b) => b.beadId);
-  const beadDocs = await Bead.find({ _id: { $in: beadIds } }).lean();
-  const byId = Object.fromEntries(beadDocs.map((b) => [String(b._id), b]));
+// Positive whole quantity in 1..MAX_PRODUCT_QTY, or null when invalid.
+function parseQty(value, fallback = 1) {
+  const n = value === undefined || value === null || value === '' ? fallback : Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= MAX_PRODUCT_QTY ? n : null;
+}
 
-  const beads = (payload.beads || [])
-    .filter((b) => Number(b.quantity) > 0)
-    .map((b) => {
-      const doc = byId[String(b.beadId)];
-      if (!doc) return null;
-      return {
-        beadId: doc._id,
-        name: doc.name,
-        slug: doc.slug,
-        image: doc.image,
-        colorHex: doc.colorHex,
-        quantity: Number(b.quantity),
-        pricePerBead: doc.pricePerBead,
-        powerUse: doc.powerUse,
-      };
-    })
-    .filter(Boolean);
-
-  const quote = calculateCustomTotal({
-    beads,
-    packaging: config.packaging,
-    packagingLabels: config.packagingLabels,
-    czOptions: config.czOptions,
-    czStyle: payload.czStyle || payload.snapshot?.czStyle || config.defaultCzStyle || 'cz',
-    addOns: payload.addOns || 0,
-    beadLimit: config.beadLimit,
-    minBeads: config.minBeads,
-  });
-
-  if (!quote.valid) {
-    const err = new Error(quote.errors.join(' '));
-    err.status = 400;
-    throw err;
-  }
-
+function productSnapshot(product) {
   return {
-    kind: 'custom_bracelet',
-    name: pieceName,
-    purpose: payload.purpose,
-    intention: payload.intention,
-    layer: payload.layer || payload.snapshot?.layer,
-    layerSelections: payload.snapshot?.layerSelections,
-    dateOfBirth: payload.dateOfBirth || payload.snapshot?.dateOfBirth || '',
-    mulank: payload.snapshot?.mulank,
-    bhagyank: payload.snapshot?.bhagyank,
-    zodiac: payload.snapshot?.zodiac,
-    explanation: payload.snapshot?.explanation,
-    beads: quote.lines.map((line, i) => ({ ...beads[i], ...line })),
-    charm: charm ? { id: charm._id, name: charm.name, slug: charm.slug } : null,
-    finish,
-    threadType: payload.threadType || payload.snapshot?.threadType,
-    wristSize,
-    beadSizeMm: payload.beadSizeMm || payload.snapshot?.beadSizeMm,
-    czStyle: payload.czStyle || payload.snapshot?.czStyle || 'cz',
-    engravingName: payload.engravingName || payload.snapshot?.engravingName || '',
-    pricing: quote,
+    name: product.name,
+    slug: product.slug,
+    image: product.images?.[0],
+    colorHex: product.colorHex,
+    family: product.family,
+    categoryId: product.categoryId,
   };
+}
+
+async function findActiveProduct(id) {
+  if (!mongoose.isObjectIdOrHexString(id)) return null;
+  const product = await Product.findById(id);
+  return product && product.isActive ? product : null;
+}
+
+// Adds/increments a product line; returns false if the merged quantity would be invalid.
+function upsertProductLine(cart, product, quantity) {
+  const existing = cart.items.find((i) => i.kind === 'product' && String(i.productId) === String(product._id));
+  if (existing) {
+    const next = Math.min(MAX_PRODUCT_QTY, existing.quantity + quantity);
+    existing.quantity = next;
+    existing.unitPrice = product.price;
+    existing.lineTotal = next * product.price;
+    existing.snapshot = { ...(existing.snapshot || {}), ...productSnapshot(product) };
+    return true;
+  }
+  if (cart.items.length >= MAX_CART_LINES) return false;
+  cart.items.push({
+    kind: 'product',
+    productId: product._id,
+    quantity,
+    unitPrice: product.price,
+    lineTotal: product.price * quantity,
+    snapshot: productSnapshot(product),
+  });
+  return true;
 }
 
 async function withQuote(cart, user, pincode) {
@@ -115,30 +88,13 @@ exports.addItem = asyncHandler(async (req, res) => {
   const { kind } = req.body;
 
   if (kind === 'product') {
-    const product = await Product.findById(req.body.productId);
-    if (!product || !product.isActive) return res.status(404).json({ message: 'Product not found.' });
-    const quantity = Number(req.body.quantity || 1);
-    const existing = cart.items.find((i) => i.kind === 'product' && String(i.productId) === String(product._id));
-    if (existing) {
-      existing.quantity += quantity;
-      existing.lineTotal = existing.quantity * existing.unitPrice;
-    } else {
-      cart.items.push({
-        kind: 'product',
-        productId: product._id,
-        quantity,
-        unitPrice: product.price,
-        lineTotal: product.price * quantity,
-        snapshot: {
-          name: product.name,
-          slug: product.slug,
-          image: product.images?.[0],
-          colorHex: product.colorHex,
-          family: product.family,
-        },
-      });
-    }
+    const product = await findActiveProduct(req.body.productId);
+    if (!product) return res.status(404).json({ message: 'Product not found.' });
+    const quantity = parseQty(req.body.quantity);
+    if (!quantity) return res.status(400).json({ message: `Quantity must be a whole number between 1 and ${MAX_PRODUCT_QTY}.` });
+    if (!upsertProductLine(cart, product, quantity)) return res.status(400).json({ message: 'Your bag is full.' });
   } else if (kind === 'custom_bracelet') {
+    if (cart.items.length >= MAX_CART_LINES) return res.status(400).json({ message: 'Your bag is full.' });
     const snapshot = await buildCustomSnapshot(req.body);
     cart.items.push({
       kind: 'custom_bracelet',
@@ -157,10 +113,12 @@ exports.addItem = asyncHandler(async (req, res) => {
 
 exports.updateItem = asyncHandler(async (req, res) => {
   const cart = await getOrCreateCart(req.user._id);
-  const item = cart.items.id(req.params.itemId);
+  const item = mongoose.isObjectIdOrHexString(req.params.itemId) ? cart.items.id(req.params.itemId) : null;
   if (!item) return res.status(404).json({ message: 'Item not found.' });
   if (req.body.quantity !== undefined) {
-    item.quantity = Math.max(1, Number(req.body.quantity));
+    const quantity = parseQty(req.body.quantity);
+    if (!quantity) return res.status(400).json({ message: `Quantity must be a whole number between 1 and ${MAX_PRODUCT_QTY}.` });
+    item.quantity = quantity;
     item.lineTotal = item.quantity * item.unitPrice;
   }
   await cart.save();
@@ -184,12 +142,16 @@ exports.clearCart = asyncHandler(async (req, res) => {
 
 exports.applyCoupon = asyncHandler(async (req, res) => {
   const cart = await getOrCreateCart(req.user._id);
-  const code = String(req.body.code || '').toUpperCase().trim();
+  if (typeof req.body.code !== 'string') return res.status(400).json({ message: 'Enter a coupon code.' });
+  const code = req.body.code.toUpperCase().trim().slice(0, 40);
   if (!code) return res.status(400).json({ message: 'Enter a coupon code.' });
-  const coupon = await findUsableCoupon(code);
-  const subtotal = cart.items.reduce((s, i) => s + (i.lineTotal || 0), 0);
-  const check = await validateCoupon({ coupon, user: req.user, items: cart.items, subtotal });
-  if (!check.ok) return res.status(400).json({ message: check.message });
+  // Validate against the live quote (current prices + categoryId), not stored cart snapshots.
+  const priced = await quoteCart({
+    items: cart.items.map((i) => (i.toObject ? i.toObject() : i)),
+    couponCode: code,
+    user: req.user,
+  });
+  if (!priced.coupon) return res.status(400).json({ message: priced.couponError || 'Coupon not found.' });
   cart.couponCode = code;
   await cart.save();
   res.json(await withQuote(cart, req.user));
@@ -204,43 +166,25 @@ exports.removeCoupon = asyncHandler(async (req, res) => {
 
 exports.mergeCart = asyncHandler(async (req, res) => {
   const cart = await getOrCreateCart(req.user._id);
-  const incoming = Array.isArray(req.body.items) ? req.body.items : [];
+  const incoming = Array.isArray(req.body.items) ? req.body.items.slice(0, MAX_CART_LINES) : [];
 
   for (const raw of incoming) {
+    if (!raw || typeof raw !== 'object') continue;
     if (raw.kind === 'product' && raw.productId) {
-      const product = await Product.findById(raw.productId);
-      if (!product || !product.isActive) continue;
-      const quantity = Number(raw.quantity || 1);
-      const existing = cart.items.find((i) => i.kind === 'product' && String(i.productId) === String(product._id));
-      if (existing) {
-        existing.quantity += quantity;
-        existing.lineTotal = existing.quantity * existing.unitPrice;
-      } else {
-        cart.items.push({
-          kind: 'product',
-          productId: product._id,
-          quantity,
-          unitPrice: product.price,
-          lineTotal: product.price * quantity,
-          snapshot: {
-            name: product.name,
-            slug: product.slug,
-            image: product.images?.[0],
-            colorHex: product.colorHex,
-            family: product.family,
-          },
-        });
-      }
+      const product = await findActiveProduct(raw.productId);
+      const quantity = parseQty(raw.quantity);
+      if (!product || !quantity) continue;
+      upsertProductLine(cart, product, quantity);
     } else if (raw.kind === 'custom_bracelet') {
+      if (cart.items.length >= MAX_CART_LINES) continue;
       try {
-        const snapshot = raw.snapshot?.pricing
-          ? raw.snapshot
-          : await buildCustomSnapshot(raw);
+        // Always re-price server-side; client snapshot prices are ignored.
+        const snapshot = await buildCustomSnapshot(raw);
         cart.items.push({
           kind: 'custom_bracelet',
           quantity: 1,
-          unitPrice: snapshot.pricing?.total || raw.unitPrice,
-          lineTotal: snapshot.pricing?.total || raw.lineTotal,
+          unitPrice: snapshot.pricing.total,
+          lineTotal: snapshot.pricing.total,
           snapshot,
         });
       } catch {

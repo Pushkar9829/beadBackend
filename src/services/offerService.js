@@ -35,7 +35,7 @@ function computeOffer(offer, items, subtotal) {
     return { discount: 0, freeShipping: false };
   }
   if (offer.type === 'percent') {
-    const percent = Math.max(0, Number(offer.percent) || 0);
+    const percent = Math.min(100, Math.max(0, Number(offer.percent) || 0));
     return { discount: Math.round((eligibleTotal * percent) / 100), freeShipping: false };
   }
   if (offer.type === 'fixed') {
@@ -50,7 +50,8 @@ function computeOffer(offer, items, subtotal) {
   }
   if (offer.type === 'bundle') {
     if (offer.percent) {
-      return { discount: Math.round((eligibleTotal * Number(offer.percent)) / 100), freeShipping: false };
+      const percent = Math.min(100, Math.max(0, Number(offer.percent) || 0));
+      return { discount: Math.round((eligibleTotal * percent) / 100), freeShipping: false };
     }
     const amount = Math.max(0, Number(offer.amountOff) || 0);
     return { discount: Math.min(amount, eligibleTotal), freeShipping: false };

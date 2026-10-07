@@ -1,6 +1,8 @@
 const StoreSettings = require('../models/StoreSettings');
 const Pincode = require('../models/Pincode');
+const mongoose = require('mongoose');
 const Product = require('../models/Product');
+const { loadStudioConfig, repriceCustomSnapshot } = require('./pricingService');
 const { findUsableCoupon, validateCoupon, computeDiscount } = require('./couponService');
 const { getSalePriceMap, applySaleToProduct } = require('./flashSaleService');
 const { bestOffer } = require('./offerService');
@@ -27,8 +29,13 @@ async function getSettings() {
 }
 
 async function checkPincode(code) {
-  const pincode = String(code || '').trim();
-  if (!pincode) return { serviceable: true, extraFee: 0, estimatedDays: 5, found: false, cod: true };
+  const raw = typeof code === 'string' || typeof code === 'number' ? String(code).trim() : '';
+  // No pincode yet (bag preview) → nothing to check; order creation always supplies one.
+  if (!raw) return { serviceable: true, extraFee: 0, estimatedDays: 5, found: false, cod: true };
+  const pincode = raw.replace(/\D/g, '');
+  if (!/^\d{6}$/.test(pincode)) {
+    return { serviceable: false, extraFee: 0, estimatedDays: 5, found: false, cod: false, invalid: true };
+  }
   const row = await Pincode.findOne({ pincode }).lean();
   if (row && row.serviceable === false) {
     return {
@@ -43,7 +50,7 @@ async function checkPincode(code) {
     };
   }
   const cfg = await ithink.getConfig();
-  if (cfg.enabled && /^\d{6}$/.test(pincode)) {
+  if (cfg.enabled) {
     try {
       const remote = await ithink.checkPincode(pincode);
       return {
@@ -70,40 +77,79 @@ async function checkPincode(code) {
   };
 }
 
-function lineUnitPrice(item, saleMap) {
-  if (item.kind === 'custom_bracelet') return item.unitPrice;
-  if (item.product && saleMap) {
-    const priced = applySaleToProduct(item.product, saleMap);
-    return priced.price;
-  }
-  return item.unitPrice;
+const MAX_LINE_QTY = 99;
+
+function lineQty(item) {
+  const n = Number(item.quantity ?? 1);
+  return Number.isInteger(n) && n >= 1 && n <= MAX_LINE_QTY ? n : null;
 }
 
 async function quote({ items, couponCode, user, pincode }) {
   const settings = await getSettings();
   const cashfree = await publicConfig();
   const saleMap = await getSalePriceMap();
-  const productIds = items.filter((i) => i.kind === 'product' && i.productId).map((i) => i.productId);
+  const productIds = items
+    .filter((i) => i.kind === 'product' && mongoose.isObjectIdOrHexString(i.productId))
+    .map((i) => i.productId);
   const products = productIds.length
     ? await Product.find({ _id: { $in: productIds } }).lean()
     : [];
   const byId = Object.fromEntries(products.map((p) => [String(p._id), p]));
+  const hasCustom = items.some((i) => i.kind === 'custom_bracelet');
+  const studioConfig = hasCustom ? await loadStudioConfig() : null;
 
-  const pricedItems = items.map((item) => {
-    const product = item.productId ? byId[String(item.productId)] : null;
-    const unit = lineUnitPrice({ ...item, product }, saleMap);
-    const qty = item.quantity || 1;
-    return {
-      ...item,
-      unitPrice: unit,
-      lineTotal: unit * qty,
-      snapshot: {
-        ...(item.snapshot || {}),
-        originalPrice: product?.price,
-        categoryId: product?.categoryId,
-      },
-    };
-  });
+  // Every line is re-priced from live data; unavailable lines are reported, never charged at stale prices.
+  const itemErrors = [];
+  const pricedItems = [];
+  for (const item of items) {
+    const name = item.snapshot?.name || item.name || 'An item';
+    const qty = lineQty(item);
+    if (!qty) {
+      itemErrors.push({ itemId: item._id, message: `${name} has an invalid quantity.` });
+      continue;
+    }
+    if (item.kind === 'product') {
+      const product = item.productId ? byId[String(item.productId)] : null;
+      if (!product || product.isActive === false) {
+        itemErrors.push({ itemId: item._id, message: `${name} is no longer available.` });
+        continue;
+      }
+      const unit = Math.max(0, Number(applySaleToProduct(product, saleMap).price) || 0);
+      pricedItems.push({
+        ...item,
+        quantity: qty,
+        unitPrice: unit,
+        lineTotal: unit * qty,
+        categoryId: product.categoryId,
+        snapshot: {
+          ...(item.snapshot || {}),
+          originalPrice: product.price,
+          categoryId: product.categoryId,
+        },
+      });
+    } else if (item.kind === 'custom_bracelet') {
+      try {
+        const { quote: pricing, finish, beads } = await repriceCustomSnapshot(item.snapshot || {}, studioConfig);
+        const unit = pricing.total;
+        pricedItems.push({
+          ...item,
+          quantity: qty,
+          unitPrice: unit,
+          lineTotal: unit * qty,
+          snapshot: {
+            ...(item.snapshot || {}),
+            beads: pricing.lines.map((line, i) => ({ ...(item.snapshot?.beads?.[i] || {}), ...beads[i], ...line })),
+            finish,
+            pricing,
+          },
+        });
+      } catch (err) {
+        itemErrors.push({ itemId: item._id, message: `${name}: ${err.message}` });
+      }
+    } else {
+      itemErrors.push({ itemId: item._id, message: `${name} cannot be purchased.` });
+    }
+  }
 
   const subtotal = pricedItems.reduce((s, i) => s + (i.lineTotal || 0), 0);
   let discount = 0;
@@ -151,6 +197,8 @@ async function quote({ items, couponCode, user, pincode }) {
 
   return {
     items: pricedItems,
+    itemErrors,
+    error: itemErrors.length ? itemErrors.map((e) => e.message).join(' ') : null,
     subtotal,
     discount,
     shippingFee,

@@ -1,8 +1,7 @@
 const Bead = require('../models/Bead');
 const StudioLayer = require('../models/StudioLayer');
-const { catalogFor, MODES } = require('../data/studioLayers');
+const { MODES } = require('../data/studioLayers');
 const { bhagyankFromDate, mulankFromDate } = require('./numerologyService');
-const { ensureStudioLayers } = require('../seed/ensureStudioLayers');
 
 const ALIASES = {
   obsidian: ['obsidian', 'black obsidian', 'obsidian / black obsidian'],
@@ -108,11 +107,13 @@ function decorateItem(kind, item, beads) {
   };
 }
 
+// Read-only: the catalog is seeded once at startup (seed/ensureStudioLayers). Public requests
+// never write; an empty kind simply yields an empty list.
 async function loadCatalog(kind) {
-  await ensureStudioLayers();
-  const rows = await StudioLayer.find({ kind }).sort({ sortOrder: 1, number: 1, name: 1 }).lean();
-  if (!rows.length) return catalogFor(kind);
-  return rows.filter((row) => row.isActive !== false);
+  const rows = await StudioLayer.find({ kind, isActive: { $ne: false } })
+    .sort({ sortOrder: 1, number: 1, name: 1 })
+    .lean();
+  return rows;
 }
 
 async function listLayers(kind) {
@@ -124,7 +125,6 @@ async function listLayers(kind) {
 }
 
 async function getLayerItem(kind, slug) {
-  await ensureStudioLayers();
   const raw = String(slug || '').trim();
   const asNumber = Number(raw);
   const fromDb = await StudioLayer.findOne({
@@ -134,17 +134,9 @@ async function getLayerItem(kind, slug) {
       ...(kind === 'numerology' && Number.isFinite(asNumber) ? [{ number: asNumber }] : []),
     ],
   }).lean();
-  if (fromDb) {
-    if (fromDb.isActive === false) return null;
-    const beads = await loadBeads();
-    return decorateItem(kind, fromDb, beads);
-  }
-  const count = await StudioLayer.countDocuments({ kind });
-  if (count) return null;
-  const item = catalogFor(kind).find((row) => String(row.slug) === String(slug));
-  if (!item) return null;
+  if (!fromDb || fromDb.isActive === false) return null;
   const beads = await loadBeads();
-  return decorateItem(kind, item, beads);
+  return decorateItem(kind, fromDb, beads);
 }
 
 function numerologyFromDate(iso) {

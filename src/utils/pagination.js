@@ -1,6 +1,6 @@
-function parsePage(req, defaultLimit = 20) {
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || defaultLimit));
+function parsePage(req, defaultLimit = 20, maxLimit = 100) {
+  const page = Math.max(1, Math.floor(Number(req.query.page)) || 1);
+  const limit = Math.min(maxLimit, Math.max(1, Math.floor(Number(req.query.limit)) || defaultLimit));
   return { page, limit, skip: (page - 1) * limit };
 }
 
@@ -14,7 +14,7 @@ function pageMeta(total, page, limit) {
 }
 
 function parseSort(req, allowed = ['createdAt', 'name', 'updatedAt'], fallback = '-createdAt') {
-  const raw = String(req.query.sort || fallback);
+  const raw = typeof req.query.sort === 'string' ? req.query.sort : fallback;
   const desc = raw.startsWith('-');
   const field = desc ? raw.slice(1) : raw;
   if (!allowed.includes(field)) return fallback;
