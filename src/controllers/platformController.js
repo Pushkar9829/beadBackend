@@ -12,6 +12,7 @@ const ReturnRequest = require('../models/ReturnRequest');
 const CouponUsage = require('../models/CouponUsage');
 const Product = require('../models/Product');
 const Bead = require('../models/Bead');
+const Purpose = require('../models/Purpose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Cart = require('../models/Cart');
@@ -949,4 +950,47 @@ exports.homeCollections = asyncHandler(async (_req, res) => {
     newArrivals: decorate(newArrivals),
     trending: decorate(trendingProducts),
   });
+});
+
+// Live numbers for the home facts strip / house tiles. Cached per process for 60s.
+const HOME_SUMMARY_TTL_MS = 60 * 1000;
+let homeSummaryCache = { at: 0, data: null };
+
+async function buildHomeSummary() {
+  const [stones, purposes, products, priceAgg, ratingAgg, familyAgg] = await Promise.all([
+    Bead.countDocuments({ isActive: true }),
+    Purpose.countDocuments({ isActive: true }),
+    Product.countDocuments({ isActive: true }),
+    Product.aggregate([{ $match: { isActive: true } }, { $group: { _id: null, min: { $min: '$price' } } }]),
+    Product.aggregate([
+      { $match: { isActive: true, reviewCount: { $gt: 0 } } },
+      {
+        $group: {
+          _id: null,
+          weighted: { $sum: { $multiply: [{ $ifNull: ['$rating', 0] }, '$reviewCount'] } },
+          count: { $sum: '$reviewCount' },
+        },
+      },
+    ]),
+    Product.aggregate([{ $match: { isActive: true } }, { $group: { _id: '$family', count: { $sum: 1 } } }]),
+  ]);
+  const houses = { crystals: 0, rudraksha: 0, gemstones: 0 };
+  for (const row of familyAgg) if (row._id in houses) houses[row._id] = row.count;
+  const r = ratingAgg[0];
+  return {
+    stones,
+    purposes,
+    products,
+    minPrice: priceAgg[0]?.min ?? null,
+    rating: r && r.count > 0 ? { average: Math.round((r.weighted / r.count) * 10) / 10, count: r.count } : null,
+    houses,
+  };
+}
+
+exports.homeSummary = asyncHandler(async (_req, res) => {
+  const now = Date.now();
+  if (!homeSummaryCache.data || now - homeSummaryCache.at > HOME_SUMMARY_TTL_MS) {
+    homeSummaryCache = { at: now, data: await buildHomeSummary() };
+  }
+  res.json(homeSummaryCache.data);
 });

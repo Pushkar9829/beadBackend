@@ -61,6 +61,8 @@ const siteContentSchema = new mongoose.Schema(
       imageAlt: String,
       primaryCta: ctaSchema,
       secondaryCta: ctaSchema,
+      hotspot: { type: mongoose.Schema.Types.Mixed },
+      slides: { type: [mongoose.Schema.Types.Mixed], default: undefined },
     },
     marquee: [String],
     houses: {
@@ -125,7 +127,14 @@ const siteContentSchema = new mongoose.Schema(
     pages: { type: mongoose.Schema.Types.Mixed, default: {} },
     footer: { type: mongoose.Schema.Types.Mixed, default: {} },
     contact: { type: mongoose.Schema.Types.Mixed, default: {} },
+    facts: { type: mongoose.Schema.Types.Mixed },
+    look: { type: mongoose.Schema.Types.Mixed },
+    finder: { type: mongoose.Schema.Types.Mixed },
+    craft: { type: mongoose.Schema.Types.Mixed },
+    reviews: { type: mongoose.Schema.Types.Mixed },
     homeLayout: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // Version of the stored homeLayout (see data/homeLayout.js HOME_LAYOUT_VERSION); absent = v1.
+    homeLayoutVersion: Number,
   },
   { timestamps: true, strict: false }
 );

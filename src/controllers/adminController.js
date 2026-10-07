@@ -2,6 +2,7 @@ const User = require('../models/User');
 const SiteContent = require('../models/SiteContent');
 const Media = require('../models/Media');
 const { mergeHomeContent } = require('../data/homeContent');
+const { HOME_LAYOUT_VERSION } = require('../data/homeLayout');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { asyncHandler, toStr, cleanBody, escapeRegex, UPDATE_OPTS } = require('../utils/asyncHandler');
@@ -183,14 +184,16 @@ exports.content = asyncHandler(async (_req, res) => {
 });
 
 exports.saveContent = asyncHandler(async (req, res) => {
-  const incoming = cleanBody(req.body, { omit: ['key'] });
+  const incoming = cleanBody(req.body, { omit: ['key', 'homeLayoutVersion'] });
   // Top-level merge: only sections present in the body are replaced; other sections stay untouched,
   // so editors that save different sections cannot overwrite each other.
-  const normalized = mergeHomeContent({ ...incoming, key: 'main' });
+  // A saved homeLayout is always in the current (v2) format, so its sortOrder is kept as sent.
+  const normalized = mergeHomeContent({ ...incoming, key: 'main', homeLayoutVersion: HOME_LAYOUT_VERSION });
   const $set = { key: 'main' };
   for (const key of Object.keys(incoming)) {
     $set[key] = Object.prototype.hasOwnProperty.call(normalized, key) ? normalized[key] : incoming[key];
   }
+  if (Object.prototype.hasOwnProperty.call(incoming, 'homeLayout')) $set.homeLayoutVersion = HOME_LAYOUT_VERSION;
   const content = await SiteContent.findOneAndUpdate(
     { key: 'main' },
     { $set },

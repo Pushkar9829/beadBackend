@@ -7,6 +7,9 @@ const BraceletConfig = require('../models/BraceletConfig');
 const IntentionBead = require('../models/IntentionBead');
 const MulankCrystal = require('../models/MulankCrystal');
 const ZodiacBead = require('../models/ZodiacBead');
+const Product = require('../models/Product');
+const { mulankFromDate } = require('../services/numerologyService');
+const { getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
 const { getRecommendedBeads } = require('../services/recommendationService');
 const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
@@ -14,6 +17,8 @@ const {
   asyncHandler,
   slugifyName,
   cleanBody,
+  toStr,
+  escapeRegex,
   mergeNestedKeys,
   takeNullsAsUnset,
   buildUpdate,
@@ -127,6 +132,102 @@ exports.studioLayerItem = asyncHandler(async (req, res) => {
   const item = await studioLayers.getLayerItem(kind, slug);
   if (!item) return res.status(404).json({ message: 'That option was not found.' });
   res.json({ kind, item });
+});
+
+const FINDER_STONE_LIMIT = 3;
+const FINDER_STONE_FIELDS = 'slug name image colorHex powerUse';
+const FINDER_PRODUCT_FIELDS = '_id slug name price compareAtPrice images shortDescription family';
+
+function finderStone(bead) {
+  return {
+    slug: bead.slug,
+    name: bead.name,
+    image: bead.image || '',
+    colorHex: bead.colorHex || '',
+    powerUse: bead.powerUse || '',
+  };
+}
+
+/** Active beads for the given ids, in the order given, capped at FINDER_STONE_LIMIT. */
+async function activeBeadsInOrder(ids) {
+  if (!ids.length) return [];
+  const docs = await Bead.find({ _id: { $in: ids }, isActive: true }).select(FINDER_STONE_FIELDS).lean();
+  const byId = new Map(docs.map((b) => [String(b._id), b]));
+  const seen = new Set();
+  const out = [];
+  for (const id of ids) {
+    const key = String(id);
+    const bead = byId.get(key);
+    if (!bead || seen.has(key)) continue;
+    seen.add(key);
+    out.push(finderStone(bead));
+    if (out.length >= FINDER_STONE_LIMIT) break;
+  }
+  return out;
+}
+
+async function finderProduct(stoneName) {
+  if (!stoneName) return null;
+  const rx = new RegExp(escapeRegex(stoneName), 'i');
+  const product = await Product.findOne({ isActive: true, $or: [{ shortDescription: rx }, { name: rx }] })
+    .sort({ rating: -1, reviewCount: -1, createdAt: -1 })
+    .select(FINDER_PRODUCT_FIELDS)
+    .lean();
+  if (!product) return null;
+  const sold = applySaleToProduct(product, await getSalePriceMap());
+  const out = {};
+  for (const key of FINDER_PRODUCT_FIELDS.split(' ')) out[key] = sold[key] ?? null;
+  return out;
+}
+
+// GET /customizer/finder?purpose=<slug> | ?dob=YYYY-MM-DD — home "stone finder" suggestions.
+exports.finder = asyncHandler(async (req, res) => {
+  const purposeSlug = toStr(req.query.purpose, 120).toLowerCase();
+  const dob = toStr(req.query.dob, 10);
+  if (purposeSlug && dob) return res.status(400).json({ message: 'Send either purpose or dob, not both.' });
+
+  if (purposeSlug) {
+    if (!/^[a-z0-9-]+$/.test(purposeSlug)) return res.status(400).json({ message: 'Invalid purpose.' });
+    const purpose = await Purpose.findOne({ slug: purposeSlug, isActive: true }).select('slug name').lean();
+    if (!purpose) return res.status(404).json({ message: 'Purpose not found.' });
+    const intention = await Intention.findOne({ purposeId: purpose._id, isActive: true })
+      .sort({ sortOrder: 1, _id: 1 })
+      .select('_id')
+      .lean();
+    const mappings = intention
+      ? await IntentionBead.find({ intentionId: intention._id }).sort({ sortOrder: 1, _id: 1 }).select('beadId').lean()
+      : [];
+    const stones = await activeBeadsInOrder(mappings.map((m) => m.beadId));
+    return res.json({
+      mode: 'purpose',
+      label: purpose.name,
+      purpose: { slug: purpose.slug, name: purpose.name },
+      stones,
+      product: await finderProduct(stones[0]?.name),
+      composeTo: `/customize?path=purpose&purpose=${encodeURIComponent(purpose.slug)}`,
+    });
+  }
+
+  if (dob) {
+    let mulank;
+    try {
+      mulank = mulankFromDate(dob);
+    } catch (err) {
+      return res.status(400).json({ message: err.message || 'Enter date of birth as YYYY-MM-DD.' });
+    }
+    const mappings = await MulankCrystal.find({ number: mulank, isActive: true }).sort({ _id: 1 }).select('beadId').lean();
+    const stones = await activeBeadsInOrder(mappings.map((m) => m.beadId));
+    return res.json({
+      mode: 'dob',
+      label: `Mulank ${mulank}`,
+      purpose: null,
+      stones,
+      product: await finderProduct(stones[0]?.name),
+      composeTo: '/customize?path=numerology',
+    });
+  }
+
+  return res.status(400).json({ message: 'Send a purpose slug or a date of birth (YYYY-MM-DD).' });
 });
 
 exports.calibrate = asyncHandler(async (req, res) => {

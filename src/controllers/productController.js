@@ -18,6 +18,8 @@ const { getSalePriceMap, applySaleToProduct } = require('../services/flashSaleSe
 const { productsForCollection } = require('../services/collectionService');
 const { attachProductRating } = require('../lib/productRating');
 
+const MAX_SLUGS = 24;
+
 function asAttributes(value) {
   if (!value) return {};
   if (value instanceof Map) return Object.fromEntries(value);
@@ -37,6 +39,12 @@ exports.listPublic = asyncHandler(async (req, res) => {
   const collectionSlug = toStr(req.query.collection, 120);
   if (family) filter.family = family;
   if (req.query.featured === 'true') filter.featured = true;
+  // slugs=a,b,c: resolve specific active products (e.g. home hotspots / shop-the-look points).
+  if (req.query.slugs !== undefined) {
+    const rawSlugs = (Array.isArray(req.query.slugs) ? req.query.slugs.map((v) => toStr(v, 200)).join(',') : toStr(req.query.slugs, 24 * 200)).split(',');
+    const slugs = [...new Set(rawSlugs.map((s) => s.trim().toLowerCase()).filter(Boolean))].slice(0, MAX_SLUGS);
+    filter.slug = { $in: slugs };
+  }
   if (categorySlug) {
     const cat = await Category.findOne({ slug: categorySlug });
     if (cat) {

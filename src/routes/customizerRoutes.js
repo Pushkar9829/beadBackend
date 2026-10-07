@@ -4,6 +4,7 @@ const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 
 const quoteLimit = rateLimit({ windowMs: 60 * 1000, max: 60 });
+const finderLimit = rateLimit({ windowMs: 60 * 1000, max: 60 });
 
 const router = express.Router();
 
@@ -18,6 +19,7 @@ router.get('/layers/:kind', ctrl.studioLayerList);
 router.get('/layers/:kind/:slug', ctrl.studioLayerItem);
 router.post('/calibrate', quoteLimit, ctrl.calibrate);
 router.post('/quote', quoteLimit, ctrl.quote);
+router.get('/finder', finderLimit, ctrl.finder);
 
 router.get('/admin/purposes', requireAuth, requireAdmin, ctrl.adminPurposes);
 router.post('/admin/purposes', requireAuth, requireAdmin, ctrl.adminSavePurpose);

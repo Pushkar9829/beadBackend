@@ -16,6 +16,7 @@ router.get('/faqs', platform.publicFaqs);
 router.get('/blog', platform.publicBlog);
 router.get('/blog/:slug', platform.publicBlogOne);
 router.get('/home/collections', platform.homeCollections);
+router.get('/home/summary', platform.homeSummary);
 const formLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, message: 'Too many submissions. Please try again later.' });
 // Nominatim allows ~1 req/s for the whole server, so keep each client well under that.
 const geoLimit = rateLimit({ windowMs: 60 * 1000, max: 10 });

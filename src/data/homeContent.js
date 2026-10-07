@@ -1,5 +1,5 @@
 const { PAGES_DEFAULTS, FOOTER_DEFAULTS, CONTACT_DEFAULTS } = require('./sitePages');
-const { mergeHomeLayout } = require('./homeLayout');
+const { mergeHomeLayout, HOME_LAYOUT_VERSION } = require('./homeLayout');
 
 const ICON_FROM_TITLE = {
   'Natural & Authentic': 'gem',
@@ -13,12 +13,53 @@ const HOME_DEFAULTS = {
   hero: {
     eyebrow: 'Energy · Abundance · Wellness',
     brandName: 'Kuberstones',
-    title: 'Heal. Align. Attract abundance.',
-    subtitle: 'Build a personal bracelet from purpose and intention — every crystal chosen with a reason.',
+    title: 'Wear your intention.',
+    subtitle:
+      'Crystal, rudraksha and gemstone bracelets composed for a reason — strung to your wrist and finished by hand in India.',
     image: '',
     imageAlt: 'Handmade crystal bracelet on the wrist',
-    primaryCta: { label: 'Customization', to: '/customize' },
-    secondaryCta: { label: 'Shop All', to: '/shop' },
+    primaryCta: { label: 'Compose yours', to: '/customize' },
+    secondaryCta: { label: 'Shop the collection', to: '/shop' },
+    // % of the hero image box; empty slug = no hotspot
+    hotspot: { productSlug: '', x: 31, y: 45 },
+    // optional extra slides: [{ image, eyebrow, title, subtitle, primaryCta, secondaryCta, hotspot }]
+    slides: [],
+  },
+  // Tokens resolved from GET /api/home/summary: {stones} {purposes} {rating} {reviews} {products} {minPrice}.
+  // An item whose token has no data is hidden by the client.
+  facts: {
+    items: [
+      { value: '{stones}', label: 'Natural stones in our library' },
+      { value: '{purposes}', label: 'Purposes to compose for' },
+      { value: '{rating} ★', label: 'Average from {reviews} reviews' },
+      { value: '5–8 days', label: 'From composition to your door' },
+    ],
+  },
+  look: {
+    eyebrow: 'Shop the look',
+    title: 'The calm stack.',
+    body: 'Amethyst for stillness, rose quartz for tenderness — layered on one wrist, worn every day.',
+    // [{ image, title, body, items: [{ productSlug, x, y }] }]  x,y = % position of the numbered point
+    looks: [],
+  },
+  finder: {
+    eyebrow: 'Stone finder',
+    title: 'Find your stone.',
+    body: 'Tell us what you are asking for, or your birth date. We suggest the stones traditionally linked to it — then compose them for your wrist.',
+    purposeLimit: 6,
+    cta: 'Compose with these',
+  },
+  craft: {
+    eyebrow: 'The craft',
+    title: 'Made slowly, by hand.',
+    body: 'Crystal associations are traditional and spiritual — not medical claims. The making, however, is exact.',
+    image: '', // fallback: rudraksha house image
+  },
+  reviews: {
+    eyebrow: 'Reviews',
+    title: 'Worn every day.',
+    showSummary: true,
+    faqTitle: 'Before you buy',
   },
   marquee: [
     'Energy',
@@ -299,7 +340,8 @@ function withClaimIcons(claims) {
 function mergeHomeContent(stored) {
   const merged = mergeValue(HOME_DEFAULTS, stored && typeof stored === 'object' ? stored : {});
   merged.trustClaims = withClaimIcons(merged.trustClaims);
-  merged.homeLayout = mergeHomeLayout(stored?.homeLayout);
+  merged.homeLayout = mergeHomeLayout(stored?.homeLayout, stored?.homeLayoutVersion);
+  merged.homeLayoutVersion = HOME_LAYOUT_VERSION;
   if (stored?._id) merged._id = stored._id;
   if (stored?.key) merged.key = stored.key;
   if (stored?.createdAt) merged.createdAt = stored.createdAt;
