@@ -65,6 +65,7 @@ const orderSchema = new mongoose.Schema(
         status: String,
         note: String,
         at: { type: Date, default: Date.now },
+        by: String, // staff name for admin-authored entries
       },
     ],
   },

@@ -3,7 +3,9 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const ReturnRequest = require('../models/ReturnRequest');
-const { asyncHandler, escapeRegex } = require('../utils/asyncHandler');
+const { asyncHandler, escapeRegex, toStr } = require('../utils/asyncHandler');
+const { parsePage, pageMeta } = require('../utils/pagination');
+const { toCsv } = require('../services/analyticsService');
 const { quote: quoteCart } = require('../services/checkoutService');
 const { findUsableCoupon, recordUsage } = require('../services/couponService');
 const { recordFlashSaleOrder } = require('../services/flashSaleService');
@@ -41,6 +43,14 @@ function cleanAddress(raw) {
     if (v) out[key] = v;
   }
   return out;
+}
+
+// Strips formatting and a +91 / 0 prefix; the caller validates the 10-digit result.
+function normalizeMobile(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
+  return digits;
 }
 
 // KS-<base36 time><4 random base36 chars>, e.g. KS-MG3K2Q1A7XQ2.
@@ -83,12 +93,7 @@ exports.create = asyncHandler(async (req, res) => {
   if (!shippingAddress.line1 || !shippingAddress.city || !/^\d{6}$/.test(shippingAddress.pincode)) {
     return res.status(400).json({ message: 'A complete shipping address with a 6-digit pincode is required.' });
   }
-  const orderPhone = String(phone || shippingAddress.phone || req.user.phone || '').replace(/\D/g, '');
-  const mobile = orderPhone.length === 12 && orderPhone.startsWith('91')
-    ? orderPhone.slice(2)
-    : orderPhone.length === 11 && orderPhone.startsWith('0')
-      ? orderPhone.slice(1)
-      : orderPhone;
+  const mobile = normalizeMobile(phone || shippingAddress.phone || req.user.phone);
   if (!/^[6-9]\d{9}$/.test(mobile)) {
     return res.status(400).json({ message: 'A valid 10-digit Indian mobile number is required.' });
   }
@@ -232,31 +237,293 @@ exports.getOne = asyncHandler(async (req, res) => {
   res.json({ order });
 });
 
-exports.adminList = asyncHandler(async (req, res) => {
+const ADMIN_EXPORT_CAP = 10000;
+const ADDRESS_EDITABLE_STATUSES = ['pending_payment', 'paid', 'processing', 'packed'];
+const DATE_ONLY_RX = /^\d{4}-\d{2}-\d{2}$/;
+const MONEY_TOLERANCE = 0.01;
+
+function roundMoney(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function queryString(value, max) {
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+function parseQueryDate(raw, { endOfDay = false } = {}) {
+  const value = queryString(raw, 40);
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw badRequest('Invalid date filter.');
+  // A bare YYYY-MM-DD "to" date includes that whole day.
+  if (endOfDay && DATE_ONLY_RX.test(value)) date.setUTCHours(23, 59, 59, 999);
+  return date;
+}
+
+/** Builds the admin order filter from query params. Returns { filter, status } (status kept separate for statusCounts). */
+function adminOrderFilter(query) {
   const filter = {};
-  if (req.query.status) filter.status = req.query.status;
-  const q = String(req.query.q || '').trim();
+  const status = queryString(query.status, 30);
+  if (status && status !== 'all' && !ORDER_STATUSES.includes(status)) throw badRequest('Unknown order status.');
+  const paymentStatus = queryString(query.paymentStatus, 20);
+  if (paymentStatus && paymentStatus !== 'all') {
+    if (!PAYMENT_STATUSES.includes(paymentStatus)) throw badRequest('Unknown payment status.');
+    filter['payment.status'] = paymentStatus;
+  }
+  const paymentMethod = queryString(query.paymentMethod, 20);
+  if (paymentMethod && paymentMethod !== 'all') {
+    if (!PAYMENT_METHODS.includes(paymentMethod)) throw badRequest('Unknown payment method.');
+    filter['payment.method'] = paymentMethod;
+  }
+  const q = queryString(query.q, 100);
   if (q) {
     const rx = new RegExp(escapeRegex(q), 'i');
-    filter.$or = [
-      { orderNumber: rx },
-      { email: rx },
-      { contactName: rx },
-      { phone: rx },
-      { 'items.snapshot.name': rx },
-      { 'items.name': rx },
-    ];
+    filter.$or = [{ orderNumber: rx }, { email: rx }, { contactName: rx }, { phone: rx }];
   }
-  const [orders, statusRows] = await Promise.all([
-    Order.find(filter).populate('userId', 'name email').sort({ createdAt: -1 }).lean(),
-    Order.aggregate([{ $group: { _id: '$status', n: { $sum: 1 } } }]),
+  const from = parseQueryDate(query.from);
+  const to = parseQueryDate(query.to, { endOfDay: true });
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = from;
+    if (to) filter.createdAt.$lte = to;
+  }
+  return { filter, status: status && status !== 'all' ? status : '' };
+}
+
+const ORDER_SORTS = {
+  '-createdAt': { createdAt: -1, _id: -1 },
+  createdAt: { createdAt: 1, _id: 1 },
+  '-total': { total: -1, _id: -1 },
+  total: { total: 1, _id: 1 },
+};
+
+function orderSort(raw) {
+  return ORDER_SORTS[typeof raw === 'string' ? raw : ''] || ORDER_SORTS['-createdAt'];
+}
+
+exports.adminList = asyncHandler(async (req, res) => {
+  let parsed;
+  try {
+    parsed = adminOrderFilter(req.query);
+  } catch (err) {
+    return res.status(err.status || 400).json({ message: err.message });
+  }
+  const { filter: baseFilter, status } = parsed;
+  const filter = status ? { ...baseFilter, status } : baseFilter;
+  const { page, limit, skip } = parsePage(req, 25, 100);
+  const [orders, total, statusRows] = await Promise.all([
+    Order.find(filter).populate('userId', 'name email').sort(orderSort(req.query.sort)).skip(skip).limit(limit).lean(),
+    Order.countDocuments(filter),
+    // Counts respect every filter except status.
+    Order.aggregate([{ $match: baseFilter }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
   ]);
-  const statusCounts = { all: 0 };
+  const statusCounts = { all: 0, ...Object.fromEntries(ORDER_STATUSES.map((s) => [s, 0])) };
   for (const row of statusRows) {
-    statusCounts[row._id] = row.n;
+    if (row._id in statusCounts && row._id !== 'all') statusCounts[row._id] = row.n;
     statusCounts.all += row.n;
   }
-  res.json({ orders, statusCounts });
+  res.json({ orders, pagination: pageMeta(total, page, limit), statusCounts });
+});
+
+function itemsSummary(order) {
+  return (order.items || [])
+    .map((item) => `${item?.snapshot?.name || item?.name || 'Custom bracelet'} x${item?.quantity || 1}`)
+    .join('; ');
+}
+
+exports.adminExport = asyncHandler(async (req, res) => {
+  let parsed;
+  try {
+    parsed = adminOrderFilter(req.query);
+  } catch (err) {
+    return res.status(err.status || 400).json({ message: err.message });
+  }
+  const filter = parsed.status ? { ...parsed.filter, status: parsed.status } : parsed.filter;
+  const orders = await Order.find(filter).sort(orderSort(req.query.sort)).limit(ADMIN_EXPORT_CAP).lean();
+  const csv = toCsv(orders, [
+    { label: 'orderNumber', value: (o) => o.orderNumber },
+    { label: 'date', value: (o) => (o.createdAt ? new Date(o.createdAt).toISOString() : '') },
+    { label: 'status', value: (o) => o.status },
+    { label: 'paymentStatus', value: (o) => o.payment?.status || '' },
+    { label: 'paymentMethod', value: (o) => o.payment?.method || '' },
+    { label: 'customer', value: (o) => o.contactName || o.shippingAddress?.name || '' },
+    { label: 'email', value: (o) => o.email || '' },
+    { label: 'phone', value: (o) => o.phone || o.shippingAddress?.phone || '' },
+    { label: 'items', value: itemsSummary },
+    { label: 'subtotal', value: (o) => o.subtotal ?? 0 },
+    { label: 'discount', value: (o) => o.discount ?? 0 },
+    { label: 'shipping', value: (o) => o.shippingFee ?? 0 },
+    { label: 'tax', value: (o) => o.tax ?? 0 },
+    { label: 'total', value: (o) => o.total ?? 0 },
+    { label: 'city', value: (o) => o.shippingAddress?.city || '' },
+    { label: 'state', value: (o) => o.shippingAddress?.state || '' },
+    { label: 'pincode', value: (o) => o.shippingAddress?.pincode || '' },
+    { label: 'waybill', value: (o) => o.shipment?.waybill || '' },
+  ]);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="orders.csv"');
+  res.send(csv);
+});
+
+exports.adminGetOne = asyncHandler(async (req, res) => {
+  if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ message: 'Order not found.' });
+  const order = await Order.findById(req.params.id).populate('userId', 'name email phone').lean();
+  if (!order) return res.status(404).json({ message: 'Order not found.' });
+  const returns = await ReturnRequest.find({ orderId: order._id }).sort({ createdAt: -1 }).lean();
+  res.json({ order, returns });
+});
+
+function staffName(req) {
+  return toStr(req.user?.name, 100) || toStr(req.user?.email, 254) || 'staff';
+}
+
+/** Appends a timeline entry atomically and bumps __v so stale save() calls fail instead of dropping it. */
+async function pushTimeline(orderId, entry, extraUpdate = {}) {
+  return Order.findOneAndUpdate(
+    { _id: orderId },
+    { ...extraUpdate, $push: { timeline: entry }, $inc: { ...(extraUpdate.$inc || {}), __v: 1 } },
+    { returnDocument: 'after' }
+  );
+}
+
+exports.adminAddNote = asyncHandler(async (req, res) => {
+  if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ message: 'Order not found.' });
+  const raw = req.body?.note;
+  const note = typeof raw === 'string' ? raw.trim() : '';
+  if (!note || note.length > 1000) return res.status(400).json({ message: 'Note must be 1-1000 characters.' });
+  const order = await Order.findById(req.params.id).select('status');
+  if (!order) return res.status(404).json({ message: 'Order not found.' });
+  const updated = await pushTimeline(order._id, { status: order.status, note, at: new Date(), by: staffName(req) });
+  if (!updated) return res.status(404).json({ message: 'Order not found.' });
+  res.json({ order: updated });
+});
+
+exports.adminUpdateAddress = asyncHandler(async (req, res) => {
+  if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ message: 'Order not found.' });
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found.' });
+  if (!ADDRESS_EDITABLE_STATUSES.includes(order.status)) {
+    return res.status(409).json({ message: `The address cannot be changed once an order is ${order.status}.` });
+  }
+  const body = req.body || {};
+  let address;
+  let contactName;
+  let phoneInput;
+  try {
+    address = cleanAddress(body.shippingAddress);
+    contactName = optString(body.contactName, 120, 'Name');
+    phoneInput = optString(body.phone, 20, 'Phone');
+  } catch (err) {
+    return res.status(err.status || 400).json({ message: err.message });
+  }
+  delete address.email;
+  address.pincode = String(address.pincode || '').replace(/\D/g, '');
+  if (!address.line1 || !address.city || !/^\d{6}$/.test(address.pincode)) {
+    return res.status(400).json({ message: 'A complete shipping address with a 6-digit pincode is required.' });
+  }
+  const mobile = normalizeMobile(phoneInput || address.phone || order.phone);
+  if (!/^[6-9]\d{9}$/.test(mobile)) {
+    return res.status(400).json({ message: 'A valid 10-digit Indian mobile number is required.' });
+  }
+  const name = contactName || address.name || order.contactName;
+  order.shippingAddress = { ...address, name, phone: mobile };
+  order.markModified('shippingAddress');
+  if (contactName) order.contactName = contactName;
+  if (phoneInput || address.phone) order.phone = mobile;
+  order.timeline = order.timeline || [];
+  order.timeline.push({
+    status: order.status,
+    note: `Shipping address updated: ${[address.line1, address.city, address.pincode].filter(Boolean).join(', ')}`,
+    at: new Date(),
+    by: staffName(req),
+  });
+  await order.save();
+  res.json({ order: await Order.findById(order._id) });
+});
+
+exports.adminRefund = asyncHandler(async (req, res) => {
+  if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ message: 'Order not found.' });
+  const body = req.body || {};
+  const requested = typeof body.amount === 'number' || typeof body.amount === 'string' ? Number(body.amount) : NaN;
+  if (!Number.isFinite(requested) || requested <= 0) {
+    return res.status(400).json({ message: 'Refund amount must be greater than zero.' });
+  }
+  let note;
+  try {
+    note = optString(body.note, 300, 'Note');
+  } catch (err) {
+    return res.status(err.status || 400).json({ message: err.message });
+  }
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found.' });
+  if (order.payment?.status !== 'paid') {
+    return res.status(409).json({ message: 'Only orders with a paid payment can be refunded.' });
+  }
+  const total = Number(order.total) || 0;
+  const remaining = roundMoney(total - (Number(order.payment?.refundedAmount) || 0));
+  if (remaining <= 0) return res.status(409).json({ message: 'This order has already been fully refunded.' });
+  // Capped at what is left to refund (total minus refunds already issued).
+  const amount = roundMoney(Math.min(roundMoney(requested), remaining));
+  const by = staffName(req);
+  const isGateway = order.payment?.method === 'gateway' || order.payment?.gateway === 'cashfree';
+
+  let refund;
+  if (isGateway) {
+    try {
+      const result = await cashfree.createRefund(order, { amount, note: note || `Refund ${order.orderNumber}` });
+      refund = { ...result, provider: 'cashfree', amount: Number(result?.refund_amount ?? amount) };
+    } catch (err) {
+      if (err.status === 409) return res.status(409).json({ message: err.message });
+      // createRefund releases its reservation on provider failure, so nothing is recorded.
+      return res.status(502).json({ message: `Cashfree refund failed: ${err.message}` });
+    }
+    await pushTimeline(order._id, {
+      status: order.status,
+      note: `Refund ${refund.amount} via Cashfree${refund.refund_id ? ` (${refund.refund_id})` : ''}${note ? `: ${note}` : ''}`,
+      at: new Date(),
+      by,
+    });
+  } else {
+    // Manual (COD/UPI) refund: atomically add to refundedAmount, never above the order total.
+    const reserved = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        'payment.status': 'paid',
+        $expr: { $lte: [{ $add: [{ $ifNull: ['$payment.refundedAmount', 0] }, amount] }, total + MONEY_TOLERANCE] },
+      },
+      {
+        $inc: { 'payment.refundedAmount': amount, __v: 1 },
+        $push: {
+          timeline: {
+            status: order.status,
+            note: `Manual refund ${amount} recorded (${order.payment?.method || 'manual'})${note ? `: ${note}` : ''}`,
+            at: new Date(),
+            by,
+          },
+        },
+      },
+      { returnDocument: 'after' }
+    );
+    if (!reserved) return res.status(409).json({ message: 'Refund would exceed the amount paid for this order.' });
+    const cumulative = roundMoney(reserved.payment?.refundedAmount);
+    const full = cumulative >= total - MONEY_TOLERANCE;
+    if (full) {
+      await Order.updateOne(
+        { _id: order._id, 'payment.status': 'paid' },
+        { $set: { 'payment.status': 'refunded' }, $inc: { __v: 1 } }
+      );
+    }
+    refund = {
+      provider: 'manual',
+      method: order.payment?.method || null,
+      amount,
+      refundedAmount: cumulative,
+      full,
+      note,
+      at: new Date(),
+    };
+  }
+  res.json({ order: await Order.findById(order._id), refund });
 });
 
 exports.adminUpdate = asyncHandler(async (req, res) => {

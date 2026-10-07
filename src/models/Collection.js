@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const seoFields = require('./seoFields');
 
 const collectionSchema = new mongoose.Schema(
   {
@@ -18,6 +19,7 @@ const collectionSchema = new mongoose.Schema(
       days: Number,
       limit: { type: Number, default: 24 },
     },
+    seo: seoFields,
   },
   { timestamps: true }
 );

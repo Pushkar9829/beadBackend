@@ -56,4 +56,74 @@ function cleanBody(body = {}, { omit = [] } = {}) {
 /** Standard options for admin findByIdAndUpdate calls. */
 const UPDATE_OPTS = Object.freeze({ returnDocument: 'after', runValidators: true });
 
-module.exports = { asyncHandler, slugifyName, escapeRegex, cleanBody, toStr, UPDATE_OPTS };
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Flattens plain nested objects into dotted `$set` paths so an update merges into the stored
+ * sub-document instead of replacing it: `{ seo: { title } }` -> `{ 'seo.title': title }`.
+ * Arrays, ObjectIds, Dates and other non-plain values are kept as values. Empty objects are skipped.
+ * Run AFTER cleanBody (cleanBody strips keys containing '.').
+ */
+function flattenForSet(obj, prefix = '', out = {}) {
+  if (!isPlainObject(obj)) {
+    if (prefix) out[prefix] = obj;
+    return out;
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (isPlainObject(value)) flattenForSet(value, path, out);
+    else out[path] = value;
+  }
+  return out;
+}
+
+/** Returns a copy of `data` where the listed top-level keys holding plain objects are flattened into dotted paths. */
+function mergeNestedKeys(data, keys) {
+  const out = {};
+  for (const [key, value] of Object.entries(data || {})) {
+    if (keys.includes(key) && isPlainObject(value)) flattenForSet(value, key, out);
+    else out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Removes listed optional fields that were sent as null (or '') from `data` and returns them as a
+ * `$unset` map, so the admin UI can clear a field by sending null.
+ */
+function takeNullsAsUnset(data, keys) {
+  const $unset = {};
+  for (const key of keys) {
+    if (key in data && (data[key] === null || data[key] === '')) {
+      delete data[key];
+      $unset[key] = 1;
+    }
+  }
+  return $unset;
+}
+
+/** Builds a Mongo update document from $set / $unset maps, omitting empty operators. */
+function buildUpdate($set = {}, $unset = {}) {
+  const update = {};
+  if (Object.keys($set).length) update.$set = $set;
+  if (Object.keys($unset).length) update.$unset = $unset;
+  return update;
+}
+
+module.exports = {
+  asyncHandler,
+  slugifyName,
+  escapeRegex,
+  cleanBody,
+  toStr,
+  UPDATE_OPTS,
+  isPlainObject,
+  flattenForSet,
+  mergeNestedKeys,
+  takeNullsAsUnset,
+  buildUpdate,
+};

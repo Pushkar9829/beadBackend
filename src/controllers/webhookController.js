@@ -39,7 +39,7 @@ exports.list = asyncHandler(async (req, res) => {
   const urls = webhooks.webhookUrls(req);
   res.json({
     ok: true,
-    webhooks: { cashfree: urls.cashfree, ithink: urls.ithink },
+    webhooks: { cashfree: urls.cashfree, ithink: urls.ithink, ithinkSync: urls.ithinkSync },
   });
 });
 

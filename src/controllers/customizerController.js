@@ -10,7 +10,14 @@ const ZodiacBead = require('../models/ZodiacBead');
 const { getRecommendedBeads } = require('../services/recommendationService');
 const { calculateCustomTotal } = require('../services/pricingService');
 const { calibrate } = require('../services/calibrationService');
-const { asyncHandler, slugifyName, cleanBody } = require('../utils/asyncHandler');
+const {
+  asyncHandler,
+  slugifyName,
+  cleanBody,
+  mergeNestedKeys,
+  takeNullsAsUnset,
+  buildUpdate,
+} = require('../utils/asyncHandler');
 
 // Admin update options: return the updated doc and enforce schema validators (min/enum/required).
 const UPDATE_OPTS = { returnDocument: 'after', runValidators: true };
@@ -258,8 +265,10 @@ exports.adminSaveBead = asyncHandler(async (req, res) => {
     data.benefits = data.benefits.split('\n').map((s) => s.trim()).filter(Boolean);
   }
   if (data.grade === '') delete data.grade;
+  // Optional numbers sent as null are cleared.
+  const $unset = takeNullsAsUnset(data, ['sizeMm', 'lowStockLimit']);
   const bead = req.params.id
-    ? await Bead.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
+    ? await Bead.findByIdAndUpdate(req.params.id, buildUpdate(data, $unset), UPDATE_OPTS)
     : await Bead.create(data);
   if (!bead) return res.status(404).json({ message: 'Not found.' });
   res.json({ bead });
@@ -361,7 +370,9 @@ exports.adminSaveCharm = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   if (!Array.isArray(data.finishes) || !data.finishes.length) {
-    data.finishes = [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#D4AF37' }];
+    // On update, a missing / empty finishes list keeps the stored finishes; new charms get a default.
+    if (req.params.id) delete data.finishes;
+    else data.finishes = [{ key: 'gold', label: 'Gold', price: 0, metalColor: '#D4AF37' }];
   }
   const charm = req.params.id
     ? await Charm.findByIdAndUpdate(req.params.id, data, UPDATE_OPTS)
@@ -406,7 +417,10 @@ exports.adminSaveConfig = asyncHandler(async (req, res) => {
   }
   if (!config) config = await BraceletConfig.create(data);
   else {
-    Object.assign(config, data);
+    // packaging / packagingLabels merge per field instead of replacing the whole sub-object.
+    for (const [path, value] of Object.entries(mergeNestedKeys(data, ['packaging', 'packagingLabels']))) {
+      config.set(path, value);
+    }
     await config.save();
   }
   res.json({ config: withStudioDefaults(config.toObject()) });

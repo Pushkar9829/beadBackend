@@ -9,9 +9,55 @@ const Offer = require('../models/Offer');
 const StockAdjustment = require('../models/StockAdjustment');
 const StoreSettings = require('../models/StoreSettings');
 const mongoose = require('mongoose');
-const { asyncHandler, slugifyName, escapeRegex, cleanBody, toStr, UPDATE_OPTS } = require('../utils/asyncHandler');
+const {
+  asyncHandler,
+  slugifyName,
+  escapeRegex,
+  cleanBody,
+  toStr,
+  UPDATE_OPTS,
+  isPlainObject,
+  flattenForSet,
+  mergeNestedKeys,
+  takeNullsAsUnset,
+  buildUpdate,
+} = require('../utils/asyncHandler');
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
-const { parseRange } = require('../services/analyticsService');
+const { parseRange, toCsv } = require('../services/analyticsService');
+
+function notFoundIfBadId(req, res, label) {
+  if (mongoose.isValidObjectId(req.params.id)) return false;
+  res.status(404).json({ message: `${label} not found.` });
+  return true;
+}
+
+function numOrNull(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function dateOrNull(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? 'invalid' : d;
+}
+
+/** Validates a start/end window on the effective (stored + incoming) values. Returns an error message or null. */
+function windowError(effective) {
+  const startsAt = dateOrNull(effective.startsAt);
+  const endsAt = dateOrNull(effective.endsAt);
+  if (startsAt === 'invalid' || endsAt === 'invalid') return 'Invalid start or end date.';
+  if (startsAt && endsAt && endsAt <= startsAt) return 'The end date must be after the start date.';
+  return null;
+}
+
+/** Stored values merged with the incoming update (unset keys removed) for cross-field validation. */
+function effectiveValues(existing, data, $unset) {
+  const out = { ...(existing || {}), ...data };
+  for (const key of Object.keys($unset)) delete out[key];
+  return out;
+}
 
 const PAID = ['paid', 'processing', 'packed', 'shipped', 'delivered'];
 
@@ -164,6 +210,13 @@ exports.dashboard = asyncHandler(async (req, res) => {
 
 const DAY_MS = 86400000;
 
+// Orders that count toward spent / aov / orderCount: paid, or in fulfilment. Never cancelled or unpaid-pending.
+const COUNTED_ORDER_MATCH = {
+  status: { $nin: ['cancelled', 'pending_payment'] },
+  $or: [{ 'payment.status': 'paid' }, { status: { $in: ['processing', 'packed', 'shipped', 'delivered'] } }],
+};
+const CUSTOMER_EXPORT_CAP = 10000;
+
 function customerSegment(u, s, now) {
   const orders = s?.orders || 0;
   const spent = s?.spent || 0;
@@ -173,14 +226,22 @@ function customerSegment(u, s, now) {
   if (spent >= 5000) segment = 'vip';
   if (!lastOrder && now - new Date(u.createdAt).getTime() > 30 * DAY_MS) segment = 'inactive';
   if (lastOrder && now - new Date(lastOrder).getTime() > 90 * DAY_MS) segment = 'inactive';
-  return { ...u, orders, spent, aov: orders ? Math.round(spent / orders) : 0, lastOrder, segment };
+  return {
+    ...u,
+    isActive: u.isActive !== false,
+    orders,
+    orderCount: orders,
+    spent,
+    aov: orders ? Math.round(spent / orders) : 0,
+    lastOrder,
+    segment,
+  };
 }
 
-exports.customers = asyncHandler(async (req, res) => {
-  const group = toStr(req.query.group, 20) || 'all';
-  const q = toStr(req.query.q, 100);
-  // Unpaginated callers (current admin UI) get a generous but bounded list.
-  const { page, limit, skip } = parsePage(req, req.query.page ? 100 : 2000, 2000);
+/** Lists customers for the given query (group, q) and window. Returns { customers, total }. */
+async function findCustomers(query, { skip, limit }) {
+  const group = toStr(query.group, 20) || 'all';
+  const q = toStr(query.q, 100);
   const now = Date.now();
   const filter = { role: 'customer' };
   if (q) {
@@ -213,6 +274,7 @@ exports.customers = asyncHandler(async (req, res) => {
           let: { uid: '$_id' },
           pipeline: [
             { $match: { $expr: { $eq: ['$userId', '$$uid'] } } },
+            { $match: COUNTED_ORDER_MATCH },
             { $group: { _id: null, orders: { $sum: 1 }, spent: { $sum: '$total' }, lastOrder: { $max: '$createdAt' } } },
           ],
           as: 'statsArr',
@@ -226,7 +288,7 @@ exports.customers = asyncHandler(async (req, res) => {
         },
       },
       { $match: segmentMatch },
-      { $sort: { createdAt: -1 } },
+      { $sort: { createdAt: -1, _id: -1 } },
       {
         $facet: {
           rows: [{ $skip: skip }, { $limit: limit }, { $project: { statsArr: 0 } }],
@@ -240,20 +302,60 @@ exports.customers = asyncHandler(async (req, res) => {
     users = rows.map(({ stats, ...u }) => u);
   } else {
     [users, total] = await Promise.all([
-      User.find(filter).select('-passwordHash -tokenVersion').sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      User.find(filter).select('-passwordHash -tokenVersion').sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
       User.countDocuments(filter),
     ]);
     const stats = users.length
       ? await Order.aggregate([
-          { $match: { userId: { $in: users.map((u) => u._id) } } },
+          { $match: { userId: { $in: users.map((u) => u._id) }, ...COUNTED_ORDER_MATCH } },
           { $group: { _id: '$userId', orders: { $sum: 1 }, spent: { $sum: '$total' }, lastOrder: { $max: '$createdAt' } } },
         ])
       : [];
     statsById = new Map(stats.map((st) => [String(st._id), st]));
   }
-  const customers = users.map((u) => customerSegment(u, statsById.get(String(u._id)), now));
+  return { customers: users.map((u) => customerSegment(u, statsById.get(String(u._id)), now)), total };
+}
+
+exports.customers = asyncHandler(async (req, res) => {
+  // Unpaginated callers (current admin UI) get a generous but bounded list.
+  const { page, limit, skip } = parsePage(req, req.query.page ? 100 : 2000, 2000);
+  const { customers, total } = await findCustomers(req.query, { skip, limit });
   res.json({ customers, pagination: pageMeta(total, page, limit) });
 });
+
+exports.exportCustomers = asyncHandler(async (req, res) => {
+  const { customers } = await findCustomers(req.query, { skip: 0, limit: CUSTOMER_EXPORT_CAP });
+  const iso = (d) => (d ? new Date(d).toISOString() : '');
+  const csv = toCsv(customers, [
+    { label: 'name', value: (c) => c.name || '' },
+    { label: 'email', value: (c) => c.email || '' },
+    { label: 'phone', value: (c) => c.phone || '' },
+    { label: 'segment', value: (c) => c.segment },
+    { label: 'orders', value: (c) => c.orderCount },
+    { label: 'spent', value: (c) => c.spent },
+    { label: 'aov', value: (c) => c.aov },
+    { label: 'lastOrder', value: (c) => iso(c.lastOrder) },
+    { label: 'joined', value: (c) => iso(c.createdAt) },
+  ]);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="customers.csv"');
+  res.send(csv);
+});
+
+const ABANDONED_ITEMS_CAP = 20;
+
+function cartItemRow(item) {
+  const snap = item?.snapshot || {};
+  const name = snap.name || (item?.kind === 'custom_bracelet' ? snap.title || 'Custom bracelet' : 'Product');
+  const image = snap.image || (Array.isArray(snap.images) ? snap.images[0] : '') || snap.previewImage || '';
+  return {
+    name,
+    quantity: item?.quantity || 1,
+    unitPrice: item?.unitPrice || 0,
+    lineTotal: item?.lineTotal || 0,
+    image: image || null,
+  };
+}
 
 exports.abandonedCarts = asyncHandler(async (req, res) => {
   // Unpaginated callers (current admin UI) get a generous but bounded list.
@@ -266,7 +368,8 @@ exports.abandonedCarts = asyncHandler(async (req, res) => {
   const rows = carts.map((c) => ({
     _id: c._id,
     user: c.userId,
-    items: c.items.length,
+    items: c.items.slice(0, ABANDONED_ITEMS_CAP).map(cartItemRow),
+    itemCount: c.items.length,
     total: c.items.reduce((sum, i) => sum + (i.lineTotal || 0), 0),
     updatedAt: c.updatedAt,
     remindedAt: c.remindedAt,
@@ -288,20 +391,24 @@ exports.listCollections = asyncHandler(async (_req, res) => {
 });
 
 exports.saveCollection = asyncHandler(async (req, res) => {
+  if (req.params.id && notFoundIfBadId(req, res, 'Collection')) return;
   const data = cleanBody(req.body);
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
-  if (data.ruleConfig && data.ruleConfig.limit != null) {
+  if (isPlainObject(data.ruleConfig) && data.ruleConfig.limit != null) {
     data.ruleConfig.limit = Math.min(100, Math.max(1, Math.floor(Number(data.ruleConfig.limit)) || 24));
   }
+  // Updates merge seo / ruleConfig into the stored sub-objects instead of replacing them.
   const collection = req.params.id
-    ? await Collection.findByIdAndUpdate(req.params.id, { $set: data }, UPDATE_OPTS)
+    ? await Collection.findByIdAndUpdate(req.params.id, { $set: mergeNestedKeys(data, ['seo', 'ruleConfig']) }, UPDATE_OPTS)
     : await Collection.create(data);
   if (!collection) return res.status(404).json({ message: 'Collection not found.' });
   res.json({ collection });
 });
 
 exports.removeCollection = asyncHandler(async (req, res) => {
-  await Collection.findByIdAndDelete(req.params.id);
+  if (notFoundIfBadId(req, res, 'Collection')) return;
+  const removed = await Collection.findByIdAndDelete(req.params.id);
+  if (!removed) return res.status(404).json({ message: 'Collection not found.' });
   await Product.updateMany({ collectionIds: req.params.id }, { $pull: { collectionIds: req.params.id } });
   res.json({ ok: true });
 });
@@ -311,18 +418,44 @@ exports.listCoupons = asyncHandler(async (_req, res) => {
   res.json({ coupons: coupons.map((c) => ({ ...c, status: couponStatus(c) })) });
 });
 
+const COUPON_NULLABLE = ['maxDiscount', 'usageLimit', 'startsAt', 'endsAt'];
+
+function couponError(c) {
+  const value = numOrNull(c.value);
+  const minOrder = numOrNull(c.minOrder);
+  const usageLimit = numOrNull(c.usageLimit);
+  const maxDiscount = numOrNull(c.maxDiscount);
+  if (Number.isNaN(value) || Number.isNaN(minOrder) || Number.isNaN(usageLimit) || Number.isNaN(maxDiscount)) {
+    return 'Coupon amounts must be numbers.';
+  }
+  if (value != null && value < 0) return 'Coupon value cannot be negative.';
+  if (c.type === 'percent' && value != null && value > 100) return 'A percent coupon cannot exceed 100%.';
+  if (minOrder != null && minOrder < 0) return 'Minimum order cannot be negative.';
+  if (usageLimit != null && usageLimit < 1) return 'Usage limit must be at least 1 when set.';
+  if (maxDiscount != null && maxDiscount < 0) return 'Maximum discount cannot be negative.';
+  return windowError(c);
+}
+
 exports.saveCoupon = asyncHandler(async (req, res) => {
+  if (req.params.id && notFoundIfBadId(req, res, 'Coupon')) return;
   const data = cleanBody(req.body, { omit: ['status', 'usedCount', 'revenueGenerated', 'discountCost'] });
   if (data.code !== undefined) data.code = toStr(data.code, 40).toUpperCase();
+  const $unset = takeNullsAsUnset(data, COUPON_NULLABLE);
+  const existing = req.params.id ? await Coupon.findById(req.params.id).lean() : null;
+  if (req.params.id && !existing) return res.status(404).json({ message: 'Coupon not found.' });
+  const error = couponError(effectiveValues(existing, data, $unset));
+  if (error) return res.status(400).json({ message: error });
   const coupon = req.params.id
-    ? await Coupon.findByIdAndUpdate(req.params.id, { $set: data }, UPDATE_OPTS)
+    ? await Coupon.findByIdAndUpdate(req.params.id, buildUpdate(data, $unset), UPDATE_OPTS)
     : await Coupon.create(data);
   if (!coupon) return res.status(404).json({ message: 'Coupon not found.' });
   res.json({ coupon });
 });
 
 exports.removeCoupon = asyncHandler(async (req, res) => {
-  await Coupon.findByIdAndDelete(req.params.id);
+  if (notFoundIfBadId(req, res, 'Coupon')) return;
+  const removed = await Coupon.findByIdAndDelete(req.params.id);
+  if (!removed) return res.status(404).json({ message: 'Coupon not found.' });
   res.json({ ok: true });
 });
 
@@ -342,26 +475,45 @@ exports.listOffers = asyncHandler(async (_req, res) => {
   res.json({ offers });
 });
 
+const OFFER_NULLABLE = ['startsAt', 'endsAt', 'percent', 'buyQty', 'getQty', 'minOrder', 'amountOff'];
+
+function offerError(o) {
+  const nums = Object.fromEntries(['percent', 'buyQty', 'getQty', 'minOrder', 'amountOff'].map((k) => [k, numOrNull(o[k])]));
+  if (Object.values(nums).some(Number.isNaN)) return 'Offer amounts must be numbers.';
+  if (nums.percent != null && (nums.percent < 0 || nums.percent > 100)) return 'Percent must be between 0 and 100.';
+  if (nums.minOrder != null && nums.minOrder < 0) return 'Minimum order cannot be negative.';
+  if (nums.amountOff != null && nums.amountOff < 0) return 'Amount off cannot be negative.';
+  if (o.type === 'bogo' && !(nums.buyQty >= 1 && nums.getQty >= 1)) {
+    return 'Buy X get Y offers need a buy quantity and a get quantity of at least 1.';
+  }
+  return windowError(o);
+}
+
 exports.saveOffer = asyncHandler(async (req, res) => {
+  if (req.params.id && notFoundIfBadId(req, res, 'Offer')) return;
   const data = cleanBody(req.body);
-  const unset = {};
-  if (!data.categoryId) {
+  const unset = takeNullsAsUnset(data, OFFER_NULLABLE);
+  // Only clear the category when the client explicitly sends an empty one; a partial update
+  // (e.g. toggling isActive) must not turn a category offer into a store-wide one.
+  if ('categoryId' in data && !data.categoryId) {
     delete data.categoryId;
     if (req.params.id) unset.categoryId = 1;
   }
+  const existing = req.params.id ? await Offer.findById(req.params.id).lean() : null;
+  if (req.params.id && !existing) return res.status(404).json({ message: 'Offer not found.' });
+  const error = offerError(effectiveValues(existing, data, unset));
+  if (error) return res.status(400).json({ message: error });
   const offer = req.params.id
-    ? await Offer.findByIdAndUpdate(
-        req.params.id,
-        Object.keys(unset).length ? { $set: data, $unset: unset } : { $set: data },
-        UPDATE_OPTS
-      )
+    ? await Offer.findByIdAndUpdate(req.params.id, buildUpdate(data, unset), UPDATE_OPTS)
     : await Offer.create(data);
   if (!offer) return res.status(404).json({ message: 'Offer not found.' });
   res.json({ offer });
 });
 
 exports.removeOffer = asyncHandler(async (req, res) => {
-  await Offer.findByIdAndDelete(req.params.id);
+  if (notFoundIfBadId(req, res, 'Offer')) return;
+  const removed = await Offer.findByIdAndDelete(req.params.id);
+  if (!removed) return res.status(404).json({ message: 'Offer not found.' });
   res.json({ ok: true });
 });
 
@@ -632,13 +784,17 @@ exports.saveSettings = asyncHandler(async (req, res) => {
         return res.status(403).json({ message: 'Only administrators can change payment or shipping credentials.' });
       }
     }
-    incoming[section] = { ...(current?.[section] || {}), ...sent };
+    incoming[section] = sent;
   }
 
+  // Sub-objects (payment, shipping, tax, seo, notifications, ...) merge into what is stored.
+  delete incoming.key;
+  const $set = { ...flattenForSet(incoming), key: 'store' };
   const settings = await StoreSettings.findOneAndUpdate(
     { key: 'store' },
-    { $set: { ...incoming, key: 'store' } },
+    { $set },
     { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true, runValidators: true }
   ).lean();
-  res.json({ settings: maskSettings(settings) });
+  // Same shape as GET: defaults + env fallbacks, secrets masked.
+  res.json({ settings: maskSettings(displaySettings(settings)) });
 });

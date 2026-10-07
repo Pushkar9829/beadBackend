@@ -16,6 +16,9 @@ const offerSchema = new mongoose.Schema(
     categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
     productIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
     isActive: { type: Boolean, default: true },
+    // Optional schedule; an offer outside its window is not applied at checkout.
+    startsAt: Date,
+    endsAt: Date,
   },
   { timestamps: true }
 );

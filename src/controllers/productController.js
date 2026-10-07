@@ -1,7 +1,18 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Collection = require('../models/Collection');
-const { asyncHandler, slugifyName, cleanBody, toStr, escapeRegex, UPDATE_OPTS } = require('../utils/asyncHandler');
+const mongoose = require('mongoose');
+const {
+  asyncHandler,
+  slugifyName,
+  cleanBody,
+  toStr,
+  escapeRegex,
+  UPDATE_OPTS,
+  mergeNestedKeys,
+  takeNullsAsUnset,
+  buildUpdate,
+} = require('../utils/asyncHandler');
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
 const { productsForCollection } = require('../services/collectionService');
@@ -79,34 +90,72 @@ function makeSku(name) {
   return `KS-${base}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
 }
 
+const PRODUCT_NULLABLE = ['compareAtPrice', 'sku'];
+const MAX_IDS = 100;
+
 exports.adminList = asyncHandler(async (req, res) => {
   const sort = parseSort(req, ['createdAt', 'name', 'price', 'stock'], '-createdAt');
   const filter = {};
+  // ids=<id,id,...>: resolve specific products (e.g. a picker's current selection). Invalid ids are ignored.
+  if (req.query.ids !== undefined) {
+    const rawIds = (Array.isArray(req.query.ids) ? req.query.ids.join(',') : toStr(req.query.ids, 100 * 30)).split(',');
+    const ids = [...new Set(rawIds.map((id) => id.trim()).filter((id) => mongoose.isValidObjectId(id)))].slice(0, MAX_IDS);
+    filter._id = { $in: ids };
+  }
   const q = toStr(req.query.q, 100);
   if (q) {
     const rx = new RegExp(escapeRegex(q), 'i');
     filter.$or = [{ name: rx }, { sku: rx }];
   }
+  const status = toStr(req.query.status, 20);
+  if (status === 'active') filter.isActive = true;
+  else if (status === 'inactive') filter.isActive = false;
   const family = toStr(req.query.family, 40);
   if (family && family !== 'all') filter.family = family;
-  const query = Product.find(filter)
+  const categoryId = toStr(req.query.categoryId, 40);
+  if (categoryId && categoryId !== 'all') {
+    if (!mongoose.isValidObjectId(categoryId)) return res.status(400).json({ message: 'Invalid category id.' });
+    filter.categoryId = categoryId;
+  }
+  const stock = toStr(req.query.stock, 10);
+  if (stock === 'out') filter.stock = { $lte: 0 };
+  else if (stock === 'low') {
+    filter.$expr = { $and: [{ $gt: ['$stock', 0] }, { $lte: ['$stock', { $ifNull: ['$lowStockLimit', 5] }] }] };
+  }
+  if (req.query.featured === 'true') filter.featured = true;
+  else if (req.query.featured === 'false') filter.featured = { $ne: true };
+
+  const { page, limit, skip } = parsePage(req, 25, 100);
+  const sortSpec = sort.startsWith('-') ? { [sort.slice(1)]: -1, _id: -1 } : { [sort]: 1, _id: 1 };
+  const [rows, total] = await Promise.all([
+    Product.find(filter)
+      .populate('categoryId', 'name slug')
+      .populate('collectionIds', 'name slug')
+      .sort(sortSpec)
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Product.countDocuments(filter),
+  ]);
+  res.json({
+    products: rows.map((p) => ({ ...p, attributes: asAttributes(p.attributes) })),
+    pagination: pageMeta(total, page, limit),
+  });
+});
+
+exports.adminGetOne = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Product not found.' });
+  const product = await Product.findById(req.params.id)
     .populate('categoryId', 'name slug')
     .populate('collectionIds', 'name slug')
-    .sort(sort);
-  if (req.query.page) {
-    const { page, limit, skip } = parsePage(req, 50);
-    const [rows, total] = await Promise.all([query.skip(skip).limit(limit).lean(), Product.countDocuments(filter)]);
-    return res.json({
-      products: rows.map((p) => ({ ...p, attributes: asAttributes(p.attributes) })),
-      pagination: pageMeta(total, page, limit),
-    });
-  }
-  const products = (await query.limit(2000).lean()).map((p) => ({ ...p, attributes: asAttributes(p.attributes) }));
-  res.json({ products, pagination: pageMeta(products.length, 1, products.length || 1) });
+    .lean();
+  if (!product) return res.status(404).json({ message: 'Product not found.' });
+  res.json({ product: { ...product, attributes: asAttributes(product.attributes) } });
 });
 
 exports.adminCreate = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
+  takeNullsAsUnset(data, PRODUCT_NULLABLE); // nothing to unset on create; just drop the nulls
   if (!data.slug && data.name) data.slug = slugifyName(data.name);
   if (!data.sku) data.sku = makeSku(toStr(data.name));
   const product = await Product.create(data);
@@ -114,12 +163,19 @@ exports.adminCreate = asyncHandler(async (req, res) => {
 });
 
 exports.adminUpdate = asyncHandler(async (req, res) => {
-  const product = await Product.findByIdAndUpdate(req.params.id, { $set: cleanBody(req.body) }, UPDATE_OPTS);
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Product not found.' });
+  const data = cleanBody(req.body);
+  const $unset = takeNullsAsUnset(data, PRODUCT_NULLABLE);
+  const update = buildUpdate(mergeNestedKeys(data, ['seo']), $unset);
+  const product = await Product.findByIdAndUpdate(req.params.id, update, UPDATE_OPTS);
   if (!product) return res.status(404).json({ message: 'Product not found.' });
   res.json({ product });
 });
 
 exports.adminRemove = asyncHandler(async (req, res) => {
-  await Product.findByIdAndDelete(req.params.id);
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Product not found.' });
+  const product = await Product.findByIdAndDelete(req.params.id);
+  if (!product) return res.status(404).json({ message: 'Product not found.' });
   res.json({ ok: true });
 });
+

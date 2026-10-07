@@ -70,7 +70,14 @@ function publicOffer(offer, extra = {}) {
 }
 
 async function bestOffer({ items, subtotal, shippingFee = 0 }) {
-  const offers = await Offer.find({ isActive: true }).lean();
+  const now = new Date();
+  const offers = await Offer.find({
+    isActive: true,
+    $and: [
+      { $or: [{ startsAt: null }, { startsAt: { $lte: now } }] },
+      { $or: [{ endsAt: null }, { endsAt: { $gt: now } }] },
+    ],
+  }).lean();
   let money = { discount: 0, offer: null };
   let ship = { offer: null };
   offers.forEach((offer) => {

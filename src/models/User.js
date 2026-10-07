@@ -30,6 +30,9 @@ const userSchema = new mongoose.Schema(
     addresses: [addressSchema],
     groupIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CustomerGroup' }],
     tokenVersion: { type: Number, default: 0 },
+    // Disabled accounts cannot sign in and their existing tokens are rejected.
+    isActive: { type: Boolean, default: true },
+    lastLoginAt: Date,
   },
   { timestamps: true }
 );
@@ -44,6 +47,8 @@ userSchema.methods.toPublic = function toPublic() {
     phone: this.phone,
     addresses: this.addresses,
     groupIds: this.groupIds,
+    isActive: this.isActive !== false,
+    lastLoginAt: this.lastLoginAt || null,
     createdAt: this.createdAt,
   };
 };

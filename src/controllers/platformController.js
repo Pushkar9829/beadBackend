@@ -20,7 +20,15 @@ const StoreSettings = require('../models/StoreSettings');
 const BraceletConfig = require('../models/BraceletConfig');
 const { activeStudioModes } = require('../data/studioConfigDefaults');
 const mongoose = require('mongoose');
-const { asyncHandler, slugifyName, cleanBody, escapeRegex, toStr, UPDATE_OPTS } = require('../utils/asyncHandler');
+const {
+  asyncHandler,
+  slugifyName,
+  cleanBody,
+  escapeRegex,
+  toStr,
+  UPDATE_OPTS,
+  mergeNestedKeys,
+} = require('../utils/asyncHandler');
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { notify, unreadCount } = require('../services/notificationService');
 const { productsForCollection, listPublicCollections, getBySlug } = require('../services/collectionService');
@@ -34,6 +42,13 @@ const { sectionLive } = require('../data/homeLayout');
 
 const EXPORT_ROW_CAP = 10000;
 
+/** Sends 404 and returns true when :id is not a valid ObjectId. */
+function badId(req, res, message = 'Not found.') {
+  if (mongoose.isValidObjectId(req.params.id)) return false;
+  res.status(404).json({ message });
+  return true;
+}
+
 function crud(Model, { slugFrom, omit = [] } = {}) {
   return {
     list: asyncHandler(async (req, res) => {
@@ -43,7 +58,7 @@ function crud(Model, { slugFrom, omit = [] } = {}) {
       const q = toStr(req.query.q, 100);
       if (q) {
         const rx = new RegExp(escapeRegex(q), 'i');
-        filter.$or = [{ name: rx }, { title: rx }, { question: rx }, { email: rx }, { code: rx }];
+        filter.$or = [{ name: rx }, { title: rx }, { question: rx }, { email: rx }, { code: rx }, { pincode: rx }, { city: rx }, { state: rx }];
       }
       if (req.query.isActive != null && req.query.isActive !== '') filter.isActive = req.query.isActive === 'true';
       const [rows, total] = await Promise.all([
@@ -53,6 +68,7 @@ function crud(Model, { slugFrom, omit = [] } = {}) {
       res.json({ items: rows, pagination: pageMeta(total, page, limit) });
     }),
     save: asyncHandler(async (req, res) => {
+      if (req.params.id && badId(req, res)) return;
       const data = cleanBody(req.body, { omit });
       if (slugFrom && !data.slug && data[slugFrom]) data.slug = slugifyName(data[slugFrom]);
       const doc = req.params.id
@@ -62,7 +78,9 @@ function crud(Model, { slugFrom, omit = [] } = {}) {
       res.json({ item: doc });
     }),
     remove: asyncHandler(async (req, res) => {
-      await Model.findByIdAndDelete(req.params.id);
+      if (badId(req, res)) return;
+      const removed = await Model.findByIdAndDelete(req.params.id);
+      if (!removed) return res.status(404).json({ message: 'Not found.' });
       res.json({ ok: true });
     }),
   };
@@ -107,8 +125,20 @@ exports.listFlashSales = asyncHandler(async (_req, res) => {
 
 exports.saveFlashSale = asyncHandler(async (req, res) => {
   // revenue / unitsSold / discountCost are maintained by order processing, never by the client.
+  if (req.params.id && badId(req, res, 'Flash sale not found.')) return;
   const data = cleanBody(req.body, { omit: ['revenue', 'unitsSold', 'discountCost'] });
-  if (data.startsAt && data.endsAt && new Date(data.endsAt) <= new Date(data.startsAt)) {
+  // Flash sales always need both dates (schema-required), so null / '' cannot clear them.
+  if (['startsAt', 'endsAt'].some((k) => k in data && (data[k] === null || data[k] === ''))) {
+    return res.status(400).json({ message: 'A flash sale needs both a start and an end date.' });
+  }
+  const existing = req.params.id ? await FlashSale.findById(req.params.id).select('startsAt endsAt').lean() : null;
+  if (req.params.id && !existing) return res.status(404).json({ message: 'Flash sale not found.' });
+  const startsAt = new Date(data.startsAt ?? existing?.startsAt);
+  const endsAt = new Date(data.endsAt ?? existing?.endsAt);
+  if ((data.startsAt !== undefined || data.endsAt !== undefined) && (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()))) {
+    return res.status(400).json({ message: 'A flash sale needs a valid start and end date.' });
+  }
+  if (endsAt <= startsAt) {
     return res.status(400).json({ message: 'The sale must end after it starts.' });
   }
   const sale = req.params.id
@@ -119,7 +149,9 @@ exports.saveFlashSale = asyncHandler(async (req, res) => {
 });
 
 exports.removeFlashSale = asyncHandler(async (req, res) => {
-  await FlashSale.findByIdAndDelete(req.params.id);
+  if (badId(req, res, 'Flash sale not found.')) return;
+  const removed = await FlashSale.findByIdAndDelete(req.params.id);
+  if (!removed) return res.status(404).json({ message: 'Flash sale not found.' });
   res.json({ ok: true });
 });
 
@@ -146,28 +178,51 @@ exports.listBlogAdmin = asyncHandler(async (req, res) => {
 });
 
 exports.saveBlog = asyncHandler(async (req, res) => {
+  if (req.params.id && badId(req, res, 'Post not found.')) return;
   const data = cleanBody(req.body);
   if (!data.slug && data.title) data.slug = slugifyName(data.title);
-  if (data.isPublished && !data.publishedAt) data.publishedAt = new Date();
-  const post = req.params.id
-    ? await BlogPost.findByIdAndUpdate(req.params.id, { $set: data }, UPDATE_OPTS)
-    : await BlogPost.create(data);
+  if (!req.params.id) {
+    if (data.isPublished && !data.publishedAt) data.publishedAt = new Date();
+    const created = await BlogPost.create(data);
+    return res.json({ post: created });
+  }
+  const existing = await BlogPost.findById(req.params.id).select('publishedAt').lean();
+  if (!existing) return res.status(404).json({ message: 'Post not found.' });
+  // Keep the original publish date: only stamp one when the post has none yet.
+  if (!data.publishedAt) delete data.publishedAt;
+  if (data.isPublished && !existing.publishedAt && !data.publishedAt) data.publishedAt = new Date();
+  const post = await BlogPost.findByIdAndUpdate(req.params.id, { $set: mergeNestedKeys(data, ['seo']) }, UPDATE_OPTS);
   if (!post) return res.status(404).json({ message: 'Post not found.' });
   res.json({ post });
 });
 
 exports.removeBlog = asyncHandler(async (req, res) => {
-  await BlogPost.findByIdAndDelete(req.params.id);
+  if (badId(req, res, 'Post not found.')) return;
+  const removed = await BlogPost.findByIdAndDelete(req.params.id);
+  if (!removed) return res.status(404).json({ message: 'Post not found.' });
   res.json({ ok: true });
 });
 
 exports.listNewsletter = asyncHandler(async (req, res) => {
   const { page, limit, skip } = parsePage(req);
+  const filter = {};
+  const q = toStr(req.query.q, 100);
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), 'i');
+    filter.$or = [{ email: rx }, { name: rx }];
+  }
   const [subscribers, total] = await Promise.all([
-    Newsletter.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-    Newsletter.countDocuments(),
+    Newsletter.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
+    Newsletter.countDocuments(filter),
   ]);
   res.json({ subscribers, pagination: pageMeta(total, page, limit) });
+});
+
+exports.removeNewsletter = asyncHandler(async (req, res) => {
+  if (badId(req, res, 'Subscriber not found.')) return;
+  const removed = await Newsletter.findByIdAndDelete(req.params.id);
+  if (!removed) return res.status(404).json({ message: 'Subscriber not found.' });
+  res.json({ ok: true });
 });
 
 exports.exportNewsletter = asyncHandler(async (_req, res) => {
@@ -185,11 +240,36 @@ exports.exportNewsletter = asyncHandler(async (_req, res) => {
 
 exports.listContacts = asyncHandler(async (req, res) => {
   const { page, limit, skip } = parsePage(req);
-  const [messages, total] = await Promise.all([
-    ContactMessage.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-    ContactMessage.countDocuments(),
+  const filter = {};
+  const q = toStr(req.query.q, 100);
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), 'i');
+    filter.$or = [{ name: rx }, { email: rx }, { message: rx }];
+  }
+  if (req.query.read === 'true') filter.read = true;
+  else if (req.query.read === 'false') filter.read = { $ne: true };
+  const [contacts, total, unread] = await Promise.all([
+    ContactMessage.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
+    ContactMessage.countDocuments(filter),
+    ContactMessage.countDocuments({ read: { $ne: true } }),
   ]);
-  res.json({ messages, pagination: pageMeta(total, page, limit) });
+  // `messages` is the legacy key, kept for older admin builds.
+  res.json({ contacts, messages: contacts, pagination: pageMeta(total, page, limit), unread });
+});
+
+exports.updateContact = asyncHandler(async (req, res) => {
+  if (badId(req, res, 'Message not found.')) return;
+  if (typeof req.body?.read !== 'boolean') return res.status(400).json({ message: 'read must be true or false.' });
+  const contact = await ContactMessage.findByIdAndUpdate(req.params.id, { $set: { read: req.body.read } }, UPDATE_OPTS);
+  if (!contact) return res.status(404).json({ message: 'Message not found.' });
+  res.json({ contact });
+});
+
+exports.removeContact = asyncHandler(async (req, res) => {
+  if (badId(req, res, 'Message not found.')) return;
+  const removed = await ContactMessage.findByIdAndDelete(req.params.id);
+  if (!removed) return res.status(404).json({ message: 'Message not found.' });
+  res.json({ ok: true });
 });
 
 exports.listNotifications = asyncHandler(async (req, res) => {
@@ -242,6 +322,10 @@ exports.featuredReorder = asyncHandler(async (req, res) => {
       })),
       { ordered: false }
     );
+  }
+  // replace: true -> the list is the complete featured set; everything else is unfeatured.
+  if (req.body?.replace === true) {
+    await Product.updateMany({ _id: { $nin: ids }, featured: true }, { $set: { featured: false } });
   }
   res.json({ ok: true });
 });
@@ -310,6 +394,18 @@ exports.listReturns = asyncHandler(async (req, res) => {
   const filter = {};
   const status = toStr(req.query.status, 20);
   if (status && RETURN_STATUSES.includes(status)) filter.status = status;
+  const type = toStr(req.query.type, 20);
+  if (type === 'return' || type === 'exchange') filter.type = type;
+  const q = toStr(req.query.q, 100);
+  if (q) {
+    // Order number / customer email / name, matched on the order and on the customer account.
+    const rx = new RegExp(escapeRegex(q), 'i');
+    const [orderIds, userIds] = await Promise.all([
+      Order.find({ $or: [{ orderNumber: rx }, { email: rx }, { contactName: rx }] }).select('_id').limit(5000).lean(),
+      User.find({ $or: [{ email: rx }, { name: rx }] }).select('_id').limit(5000).lean(),
+    ]);
+    filter.$or = [{ orderId: { $in: orderIds.map((o) => o._id) } }, { userId: { $in: userIds.map((u) => u._id) } }];
+  }
   const [returns, total] = await Promise.all([
     ReturnRequest.find(filter)
       .populate('orderId', 'orderNumber total contactName email phone shippingAddress items shipment status payment')
@@ -577,8 +673,12 @@ exports.customerProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id).populate('groupIds', 'name slug color').select('-passwordHash -tokenVersion').lean();
   if (!user) return res.status(404).json({ message: 'Customer not found.' });
   const orders = await Order.find({ userId: user._id }).sort({ createdAt: -1 }).limit(500).lean();
-  const spent = orders.reduce((s, o) => s + (o.total || 0), 0);
-  const aov = orders.length ? Math.round(spent / orders.length) : 0;
+  // Same rule as the customers list: only paid / fulfilled orders count towards spend.
+  const counted = orders.filter(
+    (o) => o.payment?.status === 'paid' || ['processing', 'packed', 'shipped', 'delivered'].includes(o.status)
+  ).filter((o) => o.status !== 'cancelled' && o.payment?.status !== 'refunded');
+  const spent = counted.reduce((s, o) => s + (o.total || 0), 0);
+  const aov = counted.length ? Math.round(spent / counted.length) : 0;
   const productMap = new Map();
   for (const o of orders) {
     for (const item of o.items || []) {
@@ -593,6 +693,7 @@ exports.customerProfile = asyncHandler(async (req, res) => {
     customer: {
       ...user,
       orders: orders.length,
+      countedOrders: counted.length,
       spent,
       aov,
       lastOrder: orders[0]?.createdAt || null,
@@ -628,7 +729,7 @@ exports.remindAbandoned = asyncHandler(async (req, res) => {
     link: '/admin/abandoned-carts',
     meta: { cartId: cart._id, email: cart.userId?.email },
   });
-  res.json({ ok: true, cart });
+  res.json({ ok: true, cart, remindedAt: cart.remindedAt });
 });
 
 exports.publicCollections = asyncHandler(async (_req, res) => {

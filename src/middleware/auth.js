@@ -21,6 +21,7 @@ async function userFromToken(token) {
   const payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'] });
   const user = await User.findById(payload.id);
   if (!user) return null;
+  if (user.isActive === false) return null;
   if ((payload.tv || 0) !== (user.tokenVersion || 0)) return null;
   return user;
 }

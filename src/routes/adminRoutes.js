@@ -12,11 +12,15 @@ router.get('/dashboard', commerce.dashboard);
 router.get('/analytics', platform.analytics);
 router.get('/analytics/export', platform.exportAnalytics);
 router.get('/customers', commerce.customers);
+router.get('/customers/export', commerce.exportCustomers);
 router.get('/customers/:id', platform.customerProfile);
 router.put('/customers/:id/groups', platform.assignGroups);
 router.get('/users', ctrl.users);
-// Managers/staff may edit names and phones; role and permission changes are admin-only inside the controller.
+router.post('/users', requireRole('admin'), ctrl.createUser);
+// Managers/staff may edit names and phones of non-admin accounts; role, permission and isActive
+// changes are admin-only inside the controller.
 router.put('/users/:id', ctrl.updateUser);
+router.post('/users/:id/password', requireRole('admin'), ctrl.setUserPassword);
 router.get('/content', ctrl.content);
 router.put('/content', ctrl.saveContent);
 router.get('/media', ctrl.listMedia);
@@ -78,7 +82,10 @@ router.delete('/blog/:id', platform.removeBlog);
 
 router.get('/newsletter', platform.listNewsletter);
 router.get('/newsletter/export', platform.exportNewsletter);
+router.delete('/newsletter/:id', platform.removeNewsletter);
 router.get('/contacts', platform.listContacts);
+router.put('/contacts/:id', platform.updateContact);
+router.delete('/contacts/:id', platform.removeContact);
 
 router.get('/groups', platform.listGroups);
 router.post('/groups', platform.saveGroup);

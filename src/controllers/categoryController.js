@@ -1,5 +1,6 @@
 const Category = require('../models/Category');
-const { asyncHandler, slugifyName, cleanBody, toStr, UPDATE_OPTS } = require('../utils/asyncHandler');
+const mongoose = require('mongoose');
+const { asyncHandler, slugifyName, cleanBody, toStr, UPDATE_OPTS, mergeNestedKeys } = require('../utils/asyncHandler');
 
 function nestTree(categories) {
   const byId = Object.fromEntries(categories.map((c) => [String(c._id), { ...c, children: [] }]));
@@ -40,6 +41,13 @@ exports.adminList = asyncHandler(async (_req, res) => {
   res.json({ categories, tree: nestTree(categories) });
 });
 
+exports.adminGetOne = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Category not found.' });
+  const category = await Category.findById(req.params.id).lean();
+  if (!category) return res.status(404).json({ message: 'Category not found.' });
+  res.json({ category });
+});
+
 exports.adminCreate = asyncHandler(async (req, res) => {
   const body = cleanBody(req.body);
   const { parentId, image, description, sortOrder, isActive } = body;
@@ -56,6 +64,7 @@ exports.adminCreate = asyncHandler(async (req, res) => {
     description,
     sortOrder,
     isActive,
+    ...(body.seo && typeof body.seo === 'object' ? { seo: body.seo } : {}),
   });
   res.status(201).json({ category });
 });
@@ -66,12 +75,16 @@ exports.adminUpdate = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'A category cannot be its own parent.' });
   }
   if (data.parentId === '') data.parentId = null;
-  const category = await Category.findByIdAndUpdate(req.params.id, { $set: data }, UPDATE_OPTS);
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Category not found.' });
+  // seo merges into the stored sub-object instead of replacing it.
+  const category = await Category.findByIdAndUpdate(req.params.id, { $set: mergeNestedKeys(data, ['seo']) }, UPDATE_OPTS);
   if (!category) return res.status(404).json({ message: 'Category not found.' });
   res.json({ category });
 });
 
 exports.adminRemove = asyncHandler(async (req, res) => {
-  await Category.findByIdAndDelete(req.params.id);
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Category not found.' });
+  const category = await Category.findByIdAndDelete(req.params.id);
+  if (!category) return res.status(404).json({ message: 'Category not found.' });
   res.json({ ok: true });
 });

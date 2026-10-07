@@ -58,6 +58,9 @@ exports.login = asyncHandler(async (req, res) => {
   // Compare against a dummy hash for unknown emails so response time doesn't reveal which accounts exist.
   const ok = await bcrypt.compare(password, user?.passwordHash || DUMMY_HASH);
   if (!user || !ok) return res.status(401).json({ message: 'Invalid email or password.' });
+  if (user.isActive === false) return res.status(401).json({ message: 'This account is disabled.' });
+  user.lastLoginAt = new Date();
+  await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: user.lastLoginAt } });
   const token = signToken(user);
   setAuthCookie(res, token);
   res.json({ user: user.toPublic(), token });
