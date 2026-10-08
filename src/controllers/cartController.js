@@ -74,6 +74,18 @@ async function withQuote(cart, user, pincode) {
     user,
     pincode,
   });
+  // The quote reprices every line live (flash sales, price edits); keep the saved lines in step
+  // so the bag never shows one price per line and charges another.
+  const live = new Map((priced.items || []).map((i) => [String(i._id), i]));
+  let changed = false;
+  for (const item of cart.items) {
+    const p = live.get(String(item._id));
+    if (!p || (p.unitPrice === item.unitPrice && p.lineTotal === item.lineTotal)) continue;
+    item.unitPrice = p.unitPrice;
+    item.lineTotal = p.lineTotal;
+    changed = true;
+  }
+  if (changed) await cart.save();
   return { cart, quote: priced };
 }
 
