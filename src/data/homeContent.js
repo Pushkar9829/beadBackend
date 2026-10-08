@@ -103,6 +103,13 @@ const HOME_DEFAULTS = {
     heading: 'Compose your bracelet',
     copy: 'Purpose, intention, then bead size, wrist, design and a name — the same finish steps on every customisation path.',
     cta: 'Open the studio →',
+    bandEyebrow: 'The studio',
+    bandTitle: 'Compose your own strand.',
+    bandBody: 'Choose a purpose and an intention; the crystals are selected for you and strung to your wrist.',
+    bandCta: 'Open the studio',
+    bandTo: '/customize',
+    productBandTitle: 'Want this feeling in your own counts?',
+    productBandBody: 'Compose a strand in the studio — Mulank, zodiac, and a name.',
   },
   ritual: {
     eyebrow: 'The ritual',

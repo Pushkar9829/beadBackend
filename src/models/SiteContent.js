@@ -81,6 +81,14 @@ const siteContentSchema = new mongoose.Schema(
       heading: String,
       copy: String,
       cta: String,
+      // the studio band on listing, journal and product pages
+      bandEyebrow: String,
+      bandTitle: String,
+      bandBody: String,
+      bandCta: String,
+      bandTo: String,
+      productBandTitle: String,
+      productBandBody: String,
     },
     ritual: {
       eyebrow: String,
