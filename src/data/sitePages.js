@@ -51,6 +51,10 @@ const PAGES_DEFAULTS = {
     },
   },
   product: {
+    detailsLabel: 'Details',
+    foundInLabel: 'Found in',
+    addLabel: 'Add to bag',
+    soldOutLabel: 'Sold out',
     missing: {
       kicker: 'Missing',
       title: 'Piece not found.',
@@ -153,6 +157,7 @@ const PAGES_DEFAULTS = {
   },
   login: {
     eyebrow: 'The atelier',
+    badge: 'Kuberstones atelier',
     title: 'Sign in',
     body: 'One account for the store and the atelier. Your bag and wishlist travel with you.',
     action: 'Create account →',
@@ -325,6 +330,12 @@ const FOOTER_DEFAULTS = {
   title: 'New strands, written quietly.',
   copy: 'Collections, studio notes, and the occasional ritual. No noise.',
   cta: 'Contact us',
+  trust: [
+    { icon: 'sparkles', title: 'Certified Authentic', body: '100% genuine lab-verified mineral specimens' },
+    { icon: 'hand', title: 'Hand-strung', body: 'Composed and strung by hand in our atelier' },
+    { icon: 'heart', title: 'Restringing Guarantee', body: '7-day complimentary sizing adjustment' },
+    { icon: 'shield', title: 'Vedic Consecration', body: 'Strung with sacred mantras before departure' },
+  ],
   brandName: 'KUBERSTONES',
   legalEntity: 'Nexxgenn Technology',
   blurb: 'Heal. Align. Attract abundance. Jewellery composed for intention — crystals, rudraksha, and gemstones, made by hand.',

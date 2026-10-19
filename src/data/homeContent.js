@@ -22,6 +22,7 @@ const HOME_DEFAULTS = {
     secondaryCta: { label: 'Shop the collection', to: '/shop' },
     // % of the hero image box; empty slug = no hotspot
     hotspot: { productSlug: '', x: 31, y: 45 },
+    plaque: '',
     // optional extra slides: [{ image, eyebrow, title, subtitle, primaryCta, secondaryCta, hotspot }]
     slides: [],
   },
@@ -48,10 +49,20 @@ const HOME_DEFAULTS = {
     body: 'Tell us what you are asking for, or your birth date. We suggest the stones traditionally linked to it — then compose them for your wrist.',
     purposeLimit: 6,
     cta: 'Compose with these',
+    ctaNote: 'Loads these specimens directly onto your strand in the studio',
   },
   craft: {
     eyebrow: 'The craft',
     title: 'Made slowly, by hand.',
+    plaque: 'Nepal high-altitude origin · Grade A Vedic seed',
+    action: 'Explore the rudraksha house',
+    to: '/rudraksha',
+    points: [
+      { title: 'High altitude', body: 'Harvested above 2,000 meters in the sanctified Himalayan foothills.' },
+      { title: 'X-ray verified', body: 'Confirmed internal density and unbroken mukhi compartments.' },
+      { title: '5 Mukhi Vedic', body: 'Ruled by Jupiter and aligned with universal peace and equanimity.' },
+      { title: 'Consecrated', body: 'Sanctified with holy Ganga jal and infused with Vedic bija mantras.' },
+    ],
     body: 'Crystal associations are traditional and spiritual — not medical claims. The making, however, is exact.',
     image: '', // fallback: rudraksha house image
   },
@@ -60,10 +71,12 @@ const HOME_DEFAULTS = {
     title: 'Worn every day.',
     showSummary: true,
     faqTitle: 'Before you buy',
+    verifiedLabel: 'From customers who bought and wore it',
   },
   houses: {
     eyebrow: 'The atelier',
     title: 'Three houses',
+    exploreLabel: 'Explore House',
     body: 'Every collection lives in one of three houses. Enter any of them — or begin in the studio and compose a strand of your own.',
     items: [
       {
@@ -73,6 +86,7 @@ const HOME_DEFAULTS = {
         blurb: 'Strands composed for intention — colour, count, and character held with restraint.',
         image: '',
         cta: 'Enter the house →',
+        kicker: '',
       },
       {
         slug: 'rudraksha',
@@ -81,6 +95,7 @@ const HOME_DEFAULTS = {
         blurb: 'Sacred seed jewellery, quiet in silhouette and exact in its making.',
         image: '',
         cta: 'Enter the house →',
+        kicker: '',
       },
       {
         slug: 'gemstones',
@@ -89,6 +104,7 @@ const HOME_DEFAULTS = {
         blurb: 'Cut stones and bracelet collections, set for light rather than noise.',
         image: '',
         cta: 'Enter the house →',
+        kicker: '',
       },
     ],
   },
@@ -136,6 +152,19 @@ const HOME_DEFAULTS = {
     customizeLabel: 'Customization',
     collectionsLabel: 'Collections',
     shopAllLabel: 'Shop All',
+    notice: 'Consecrated in sacred temples & hand-strung within 48 hours',
+    studioMenuAll: 'Open the studio',
+    accountGuestTitle: 'Account',
+    accountMemberTitle: 'Member',
+    accountGreeting: 'Namaste,',
+    accountOrders: 'My orders',
+    accountProfile: 'My account',
+    accountWishlist: 'Wishlist',
+    accountSignIn: 'Sign in',
+    accountRegister: 'Create account',
+    accountForgot: 'Forgot password?',
+    accountSignOut: 'Sign out',
+    accountRegisterCta: 'Create an account',
   },
   purpose: {
     eyebrow: 'Purpose',
@@ -174,6 +203,8 @@ const HOME_DEFAULTS = {
   },
   flash: {
     label: 'Flash sale',
+    title: 'A short list, briefly.',
+    addLabel: 'Add',
     body: 'Timed prices on a short list. When the clock ends, the atelier rate returns.',
     action: 'Shop the sale →',
     to: '/sale',
@@ -182,10 +213,33 @@ const HOME_DEFAULTS = {
     emptyBody: 'When a flash sale is live, timed prices will appear here.',
     emptyProducts: 'Products for this sale are being placed.',
   },
+  kundali: {
+    eyebrow: 'Exclusive offer',
+    titleLead: 'Your Kundali,',
+    titleTail: 'on us',
+    bodyLead: 'Bring home your chosen spiritual pieces and receive a',
+    bodyHighlight: 'complimentary personalized Kundali',
+    bodyTail: 'with every order above',
+    threshold: '₹2,000',
+    sealTop: 'FREE',
+    sealName: 'KUNDALI',
+    sealLine: 'ON ORDERS ABOVE',
+    image: '',
+    action: 'Avail the offer',
+    to: '/shop',
+    steps: [
+      { icon: 'bag', titleLead: 'Shop', titleTail: 'Your Sacred Pieces', body: 'Explore handcrafted malas and spiritual keepsakes.' },
+      { icon: 'cart', titleLead: 'Order Above', titleTail: '{threshold}', body: 'Add your favorite pieces and place an order worth {threshold} or more.' },
+      { icon: 'chart', titleLead: 'Receive Your', titleTail: 'Personalized Kundali', body: 'Your Kundali, prepared by our expert astrologers, is included as a complimentary gift with your order.' },
+    ],
+  },
   newsletter: {
     eyebrow: 'The list',
     title: 'Quiet notes from the atelier.',
     compactTitle: 'The list.',
+    body: 'Subscribe for astrological transit advisories, lunar eclipse consecration updates, and exclusive access to uncirculated Himalayan gemstone drops.',
+    note: 'We transmit only purposeful astrological notices. Zero superfluous communications.',
+    image: '',
   },
   voices: {
     eyebrow: 'Voices',

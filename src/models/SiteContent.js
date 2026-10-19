@@ -14,6 +14,7 @@ const houseItemSchema = new mongoose.Schema(
     name: String,
     roman: String,
     blurb: String,
+    kicker: String,
     image: String,
     cta: String,
   },
