@@ -12,6 +12,11 @@ const productSchema = new mongoose.Schema(
     images: [String],
     description: String,
     shortDescription: String,
+    // "Sacred energy & benefits" bullets on the product page.
+    benefits: {
+      type: [{ type: String, trim: true, maxlength: 300 }],
+      validate: { validator: (v) => v.length <= 8, message: 'Up to 8 benefits.' },
+    },
     price: { type: Number, required: true, min: 0 },
     compareAtPrice: Number,
     stock: { type: Number, default: 0 },
