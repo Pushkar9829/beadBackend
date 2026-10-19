@@ -98,10 +98,13 @@ const PAGES_DEFAULTS = {
     ],
   },
   aboutPage: {
-    eyebrow: 'The house',
-    action: 'Customization →',
-    to: '/customize',
-    image: '',
+    kicker: 'About the house',
+    titleLead: 'HEAL. ALIGN.',
+    titleTail: 'Attract abundance.',
+    cardTitle: 'Explore The Atelier',
+    cardBody: 'Build your bespoke intention strand with our live 3D visualizer.',
+    cardAction: 'Compose Your Strand',
+    cardTo: '/customize',
   },
   collections: {
     eyebrow: 'The rooms',
