@@ -9,15 +9,11 @@ const HOME_LAYOUT_DEFAULTS = [
   { key: 'collection', label: 'Collection carousel', enabled: true, sortOrder: 3 },
   { key: 'flash_sale', label: 'Flash sale', enabled: true, sortOrder: 4 },
   { key: 'kundali', label: 'Kundali offer', enabled: true, sortOrder: 4.5 },
-  { key: 'look', label: 'Shop the look', enabled: true, sortOrder: 5 },
   { key: 'finder', label: 'Stone finder', enabled: true, sortOrder: 6 },
-  { key: 'purposes', label: 'Shop by purpose', enabled: true, sortOrder: 7 },
   { key: 'craft', label: 'The craft', enabled: true, sortOrder: 8 },
   { key: 'reviews', label: 'Reviews', enabled: true, sortOrder: 9 },
   { key: 'promises', label: 'Promises strip', enabled: true, sortOrder: 9.5 },
-  { key: 'journal', label: 'Journal', enabled: true, sortOrder: 10 },
   { key: 'newsletter', label: 'Newsletter', enabled: true, sortOrder: 11 },
-  { key: 'finale', label: 'Closing banner', enabled: true, sortOrder: 12 },
 ];
 
 // v1 key -> v2 key, for carrying enabled/startsAt/endsAt across the migration.
@@ -25,11 +21,8 @@ const LEGACY_KEY_MAP = {
   hero: 'hero',
   flash_sale: 'flash_sale',
   houses: 'houses',
-  journal: 'journal',
   newsletter: 'newsletter',
-  finale: 'finale',
   featured: 'collection',
-  shop_by_purpose: 'purposes',
   testimonials: 'reviews',
   trust: 'craft',
 };

@@ -30,10 +30,9 @@ const HOME_DEFAULTS = {
   // An item whose token has no data is hidden by the client.
   facts: {
     items: [
-      { value: '{stones}', label: 'Natural stones in our library' },
-      { value: '{purposes}', label: 'Purposes to compose for' },
-      { value: '{rating} ★', label: 'Average from {reviews} reviews' },
-      { value: '5–8 days', label: 'From composition to your door' },
+      { value: 'Consecrated', label: 'in sacred Rishikesh' },
+      { value: 'Genuine', label: 'lab-verified minerals' },
+      { value: 'Composed', label: 'by sacred numerology' },
     ],
   },
   look: {
@@ -227,6 +226,18 @@ const HOME_DEFAULTS = {
     image: '',
     action: 'Avail the offer',
     to: '/shop',
+    modalEyebrow: 'Free Vedic Kundali offer',
+    modalTitleLead: 'Inscribe Your',
+    modalTitleTail: 'Birth Details',
+    modalBody: 'Provide your exact birth coordinates. Our Rishikesh astrologers will prepare your complimentary personalized Kundali chart included with every order above {threshold}.',
+    modalHint: '* Exact birth time enables precise Ascendant (Lagna), planetary decan, and gemstone alignment.',
+    modalAction: 'Confirm & avail offer',
+    successEyebrow: 'Vedic consecration reserved',
+    successTitleLead: 'Your Kundali Is',
+    successTitleTail: 'Reserved',
+    successBody: 'Birth coordinates for {name} ({place}) have been successfully inscribed into our register. Your personalized physical Kundali box will be included complimentary with your order of {threshold} or more.',
+    successStatus: 'Complimentary on {threshold}+ orders',
+    successAction: 'Explore sacred pieces ({threshold}+)',
     steps: [
       { icon: 'bag', titleLead: 'Shop', titleTail: 'Your Sacred Pieces', body: 'Explore handcrafted malas and spiritual keepsakes.' },
       { icon: 'cart', titleLead: 'Order Above', titleTail: '{threshold}', body: 'Add your favorite pieces and place an order worth {threshold} or more.' },
