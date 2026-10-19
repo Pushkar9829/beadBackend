@@ -132,18 +132,15 @@ const PAGES_DEFAULTS = {
     },
   },
   wishlist: {
-    eyebrow: 'The atelier',
     title: 'Wishlist',
-    emptyBody: 'Save pieces you love. They wait here until you are ready.',
-    filledBody: '{count} saved {pieces} — held here until you are ready.',
-    action: 'Shop all →',
-    to: '/shop',
-    empty: {
-      kicker: 'Empty',
-      title: 'Nothing saved yet.',
-      copy: 'Begin in the houses, or compose a strand in the studio.',
-      primaryCta: { label: 'Shop All', to: '/shop' },
-      secondaryCta: { label: 'Customization', to: '/customize' },
+    kicker: 'Saved for intention',
+    heading: 'SACRED',
+    headingTail: 'wishlist',
+    intro: 'Pieces attuned to your spirit, held in quiet contemplation.',
+    emptyState: {
+      title: 'Your Wishlist is Empty',
+      copy: 'Tap the sacred heart on any crystal, gemstone, or rudraksha piece to keep it close.',
+      primaryCta: { label: 'Explore All Pieces', to: '/shop' },
     },
   },
   checkout: {
