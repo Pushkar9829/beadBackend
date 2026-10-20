@@ -35,13 +35,6 @@ const HOME_DEFAULTS = {
       { value: 'Composed', label: 'by sacred numerology' },
     ],
   },
-  look: {
-    eyebrow: 'Shop the look',
-    title: 'The calm stack.',
-    body: 'Amethyst for stillness, rose quartz for tenderness — layered on one wrist, worn every day.',
-    // [{ image, title, body, items: [{ productSlug, x, y }] }]  x,y = % position of the numbered point
-    looks: [],
-  },
   finder: {
     eyebrow: 'Stone finder',
     title: 'Find your stone.',
@@ -298,14 +291,6 @@ const HOME_DEFAULTS = {
     { icon: 'sparkles', title: 'Energized / Cleansed', body: 'Pieces are prepared in-house with our standard cleanse ritual before dispatch.' },
     { icon: 'shield', title: 'Secure Payments', body: 'Pay online through Cashfree, UPI, or cash on delivery where the pincode allows it.' },
   ],
-  finale: {
-    image: '',
-    kicker: 'Begin',
-    title: 'A bracelet with a reason.',
-    copy: 'Start with a purpose in the studio, or walk the three houses until a piece finds you.',
-    primaryCta: { label: 'Customization', to: '/customize' },
-    secondaryCta: { label: 'Shop All', to: '/shop' },
-  },
   about: {
     eyebrow: 'Kuberstones',
     headline: 'Personalized Spirituality, Designed Around You',
