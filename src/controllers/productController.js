@@ -39,6 +39,9 @@ exports.listPublic = asyncHandler(async (req, res) => {
   const collectionSlug = toStr(req.query.collection, 120);
   if (family) filter.family = family;
   if (req.query.featured === 'true') filter.featured = true;
+  // maxPrice=1500: pieces at or under a price (home "Under ₹1,500" tab).
+  const maxPrice = Number(req.query.maxPrice);
+  if (req.query.maxPrice !== undefined && Number.isFinite(maxPrice) && maxPrice > 0) filter.price = { $lte: maxPrice };
   // slugs=a,b,c: resolve specific active products (e.g. home hotspots / shop-the-look points).
   if (req.query.slugs !== undefined) {
     const rawSlugs = (Array.isArray(req.query.slugs) ? req.query.slugs.map((v) => toStr(v, 200)).join(',') : toStr(req.query.slugs, 24 * 200)).split(',');

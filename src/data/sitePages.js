@@ -8,6 +8,8 @@ const EMPTY_HOUSES = {
 
 const PAGES_DEFAULTS = {
   shop: {
+    heroAction: 'Custom Studio',
+    heroTo: '/customize',
     eyebrow: 'The collection',
     title: 'Shop All',
     body: 'Ready-made pieces across crystals, rudraksha and gemstones.',
