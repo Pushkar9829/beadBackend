@@ -371,6 +371,15 @@ async function runFulfillmentSideEffects(order) {
     link: '/admin/orders',
     meta: { orderId: order._id, total: order.total },
   });
+
+  // Free Kundli for qualifying orders: background work, never fails the payment flow.
+  try {
+    require('./kundliService')
+      .onOrderConfirmed(order)
+      .catch((err) => console.warn(`[cashfree] kundli for ${order.orderNumber}: ${err.message}`));
+  } catch (err) {
+    console.warn(`[cashfree] kundli for ${order.orderNumber}: ${err.message}`);
+  }
 }
 
 /**

@@ -2,6 +2,7 @@ const express = require('express');
 const ctrl = require('../controllers/adminController');
 const commerce = require('../controllers/commerceController');
 const platform = require('../controllers/platformController');
+const kundli = require('../controllers/kundliController');
 const { requireAuth, requireAdmin, requireRole } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 
@@ -48,6 +49,13 @@ router.delete('/offers/:id', commerce.removeOffer);
 router.get('/inventory', commerce.inventory);
 router.post('/inventory/adjust', commerce.adjustStock);
 router.get('/inventory/history', commerce.stockHistory);
+
+// Free Kundli: all staff may view and fix birth data; regenerating (spends AstrologyAPI credits) and deleting are admin-only.
+router.get('/kundli', kundli.adminList);
+router.get('/kundli/:id', kundli.adminGet);
+router.patch('/kundli/:id/details', kundli.adminUpdateDetails);
+router.post('/kundli/:id/generate', requireRole('admin'), kundli.adminGenerate);
+router.delete('/kundli/:id', requireRole('admin'), kundli.adminRemove);
 
 router.get('/abandoned-carts', commerce.abandonedCarts);
 router.post('/abandoned-carts/:id/remind', platform.remindAbandoned);

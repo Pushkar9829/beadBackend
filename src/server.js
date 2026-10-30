@@ -25,6 +25,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const storeRoutes = require('./routes/storeRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const shippingRoutes = require('./routes/shippingRoutes');
+const kundliRoutes = require('./routes/kundliRoutes');
 
 jwtSecret(); // fail fast on a missing/weak JWT_SECRET
 
@@ -141,6 +142,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/shipping', shippingRoutes);
+app.use('/api/kundli', kundliRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.use(notFound);
