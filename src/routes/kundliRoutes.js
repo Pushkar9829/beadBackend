@@ -5,15 +5,15 @@ const { rateLimit } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
-// Same limit as the contact form (5/hour per IP) for the signed-out modal.
-const formLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, message: 'Too many submissions. Please try again later.' });
-// Place search is public (signed-out modal) and costs an AstrologyAPI call per uncached query.
+// Every Kundli route is for signed-in users (the home modal asks signed-out visitors to sign in).
+// Place search costs an AstrologyAPI call per uncached query: per-IP limit here, plus a global daily cap
+// on new lookups (KUNDLI_PLACES_DAILY_CAP) in the service. Staff use it from the admin drawer too.
 const placeLimit = rateLimit({ windowMs: 60 * 1000, max: 20, message: 'Too many place searches. Please wait a moment.' });
 const perUser = (max) => rateLimit({ windowMs: 60 * 1000, max, key: (req) => String(req.user?._id || req.ip) });
 
-router.get('/places', placeLimit, ctrl.places);
-router.post('/details', formLimit, ctrl.savePublic);
+router.get('/places', placeLimit, requireAuth, ctrl.places);
 router.get('/mine', requireAuth, ctrl.mine);
 router.put('/details', requireAuth, perUser(10), ctrl.saveMine);
+router.post('/retry', requireAuth, perUser(5), ctrl.retryMine);
 
 module.exports = router;

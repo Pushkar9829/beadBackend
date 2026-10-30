@@ -7,15 +7,51 @@
 const JSON_BASE = 'https://json.astrologyapi.com/v1';
 const PDF_URL = 'https://pdf.astrologyapi.com/v1/basic_horoscope_pdf';
 
-function fail(message, status = 502, code = 'upstream') {
+// `billed: false` marks errors raised before any request reached AstrologyAPI (not configured, network
+// failure), so they are not counted as API calls.
+function fail(message, status = 502, code = 'upstream', billed = true) {
   const err = new Error(message);
   err.status = status;
   err.code = code;
+  err.billed = billed;
   return err;
 }
 
 function timeoutMs() {
   return Number(process.env.ASTROLOGY_API_TIMEOUT_MS) || 20000;
+}
+
+// The PDF is rendered server-side upstream and can take much longer than the JSON endpoints.
+function pdfTimeoutMs() {
+  return Number(process.env.ASTROLOGY_API_PDF_TIMEOUT_MS) || 60000;
+}
+
+/** An SVG document, allowing an XML prolog, DOCTYPE and comments before the <svg> element. */
+function looksLikeSvg(text) {
+  return /^\s*(?:<\?xml[\s\S]*?\?>\s*)?(?:(?:<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)\s*)*<svg[\s>]/i.test(String(text || ''));
+}
+
+/** The URL if it is an absolute https: URL, else null. */
+function httpsUrl(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A short, single-line upstream error message (stored in section errors, never shown to customers). */
+function upstreamMessage(text) {
+  let msg = '';
+  try {
+    const json = JSON.parse(text);
+    msg = json?.msg || json?.message || json?.error || '';
+  } catch {
+    msg = /^\s*</.test(text) ? '' : text;
+  }
+  return String(msg || '').replace(/\s+/g, ' ').trim().slice(0, 160);
 }
 
 function credentials() {
@@ -30,8 +66,10 @@ function isMock() {
   return flag === '1' || flag === 'true';
 }
 
+// Both values are needed: without the user id no Basic header is sent and every call is rejected.
 function isConfigured() {
-  return isMock() || Boolean(credentials().apiKey);
+  const { userId, apiKey } = credentials();
+  return isMock() || Boolean(userId && apiKey);
 }
 
 function headers(extra = {}) {
@@ -43,30 +81,33 @@ function headers(extra = {}) {
   return out;
 }
 
-function statusError(status, endpoint) {
-  if (status === 401 || status === 403) return fail(`AstrologyAPI rejected the credentials (${status}) on ${endpoint}.`, 502, 'auth');
-  if (status === 402) return fail('AstrologyAPI: the account is out of credits (402).', 502, 'credits');
-  if (status === 429) return fail(`AstrologyAPI rate limit reached on ${endpoint}.`, 502, 'rate');
-  if (status >= 500) return fail(`AstrologyAPI is unavailable (${status}) on ${endpoint}.`, 502, 'upstream');
-  return fail(`AstrologyAPI returned ${status} on ${endpoint}.`, 502, 'upstream');
+function statusError(status, endpoint, text) {
+  const detail = upstreamMessage(text);
+  const tail = detail ? ` ${detail}` : '';
+  if (status === 401 || status === 403) return fail(`AstrologyAPI rejected the credentials (${status}) on ${endpoint}.${tail}`, 502, 'auth');
+  if (status === 402) return fail(`AstrologyAPI: the account is out of credits (402).${tail}`, 502, 'credits');
+  if (status === 429) return fail(`AstrologyAPI rate limit reached on ${endpoint}.${tail}`, 502, 'rate');
+  if (status >= 500) return fail(`AstrologyAPI is unavailable (${status}) on ${endpoint}.${tail}`, 502, 'upstream');
+  return fail(`AstrologyAPI returned ${status} on ${endpoint}.${tail}`, 502, 'upstream');
 }
 
-async function send(url, endpoint, init) {
+async function send(url, endpoint, init, ms = timeoutMs()) {
   let res;
   try {
-    res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs()) });
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
   } catch (err) {
+    // A timed-out request probably reached AstrologyAPI (and may be billed); a failed connection did not.
     if (err.name === 'TimeoutError' || err.name === 'AbortError') throw fail(`AstrologyAPI timed out on ${endpoint}.`, 504, 'timeout');
-    throw fail(`Could not reach AstrologyAPI (${endpoint}): ${err.message}`, 502, 'network');
+    throw fail(`Could not reach AstrologyAPI (${endpoint}): ${err.message}`, 502, 'network', false);
   }
   const text = await res.text();
-  if (!res.ok) throw statusError(res.status, endpoint);
+  if (!res.ok) throw statusError(res.status, endpoint, text);
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    // horo_chart_image can come back as a bare SVG string.
-    if (/^\s*<svg[\s>]/i.test(text)) return text;
+    // horo_chart_image can come back as a bare SVG string (possibly with an XML prolog).
+    if (looksLikeSvg(text)) return text;
     throw fail(`AstrologyAPI sent an unreadable response on ${endpoint}.`, 502, 'upstream');
   }
   // Errors are sometimes a 200 with { status: false, msg }.
@@ -77,7 +118,8 @@ async function send(url, endpoint, init) {
 }
 
 function assertLive() {
-  if (!credentials().apiKey) throw fail('AstrologyAPI is not configured.', 503, 'not_configured');
+  const { userId, apiKey } = credentials();
+  if (!userId || !apiKey) throw fail('AstrologyAPI is not configured.', 503, 'not_configured', false);
 }
 
 /** POST a JSON endpoint, e.g. call('astro_details', birthBody). */
@@ -93,17 +135,29 @@ async function call(endpoint, body) {
 
 /** Basic horoscope PDF; resolves to the hosted pdf_url. */
 async function horoscopePdf(fields) {
-  if (isMock()) return mockResponse('pdf', fields).pdf_url;
-  assertLive();
-  const form = new URLSearchParams();
-  for (const [k, v] of Object.entries(fields || {})) if (v !== undefined && v !== null) form.set(k, String(v));
-  const json = await send(PDF_URL, 'basic_horoscope_pdf', {
-    method: 'POST',
-    headers: headers({ 'Content-Type': 'application/x-www-form-urlencoded' }),
-    body: form.toString(),
-  });
+  let json;
+  if (isMock()) {
+    json = mockResponse('pdf', fields);
+  } else {
+    assertLive();
+    const form = new URLSearchParams();
+    for (const [k, v] of Object.entries(fields || {})) if (v !== undefined && v !== null) form.set(k, String(v));
+    json = await send(
+      PDF_URL,
+      'basic_horoscope_pdf',
+      {
+        method: 'POST',
+        headers: headers({ 'Content-Type': 'application/x-www-form-urlencoded' }),
+        body: form.toString(),
+      },
+      pdfTimeoutMs()
+    );
+  }
   if (!json?.pdf_url) throw fail('AstrologyAPI did not return a PDF link.', 502, 'upstream');
-  return json.pdf_url;
+  // Stored and sent to the browser as a link: only https is accepted.
+  const url = httpsUrl(json.pdf_url);
+  if (!url) throw fail('AstrologyAPI returned a PDF link that is not https.', 502, 'upstream');
+  return url;
 }
 
 /* ---------------- mock mode ---------------- */
@@ -209,7 +263,8 @@ function mockResponse(endpoint, body = {}) {
     case 'planets':
       return mockPlanets();
     case 'horo_chart_image/D1':
-      return { svg: MOCK_SVG };
+      // With an XML prolog, as some SVG producers send it (the chart check must accept it).
+      return { svg: `<?xml version="1.0" encoding="UTF-8"?>\n${MOCK_SVG}` };
     case 'current_vdasha':
       return {
         major: { planet: 'Saturn', start: '14-3-2019 6:32', end: '14-3-2038 12:44' },
@@ -264,4 +319,4 @@ function mockResponse(endpoint, body = {}) {
   }
 }
 
-module.exports = { call, horoscopePdf, isMock, isConfigured };
+module.exports = { call, horoscopePdf, isMock, isConfigured, looksLikeSvg, httpsUrl };

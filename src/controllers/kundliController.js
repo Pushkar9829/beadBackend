@@ -17,22 +17,19 @@ exports.mine = asyncHandler(async (req, res) => {
   res.json(await kundli.mine(req.user));
 });
 
-// PUT /api/kundli/details (signed in): home modal and Account → My Kundli.
+// PUT /api/kundli/details (signed in only): home modal and Account → My Kundli.
 exports.saveMine = asyncHandler(async (req, res) => {
   await kundli.saveDetails({ user: req.user, details: req.body });
   res.json(await kundli.mine(req.user));
 });
 
-// POST /api/kundli/details (signed out): stored by email until the customer's first qualifying order.
-exports.savePublic = asyncHandler(async (req, res) => {
-  if (req.user) {
-    await kundli.saveDetails({ user: req.user, details: req.body });
-    return res.status(201).json({ ok: true, signedIn: true });
-  }
-  await kundli.saveDetails({ email: req.body?.email, details: req.body });
-  res.status(201).json({ ok: true });
+// POST /api/kundli/retry: re-runs a failed Kundli with the saved details (limited).
+exports.retryMine = asyncHandler(async (req, res) => {
+  await kundli.retry(req.user);
+  res.json(await kundli.mine(req.user));
 });
 
+// GET /api/kundli/places (signed in; customers and staff): cached, capped per day.
 exports.places = asyncHandler(async (req, res) => {
   res.json({ places: await kundli.searchPlaces(req.query.q) });
 });
@@ -64,11 +61,21 @@ exports.adminList = asyncHandler(async (req, res) => {
     pagination: pageMeta(total, page, limit),
     counts: Object.fromEntries(counts.map((c) => [c._id, c.n])),
     api: { configured: astrology.isConfigured(), mock: astrology.isMock() },
+    rules: await kundli.adminRules(),
   });
 });
 
 async function adminDoc(id) {
-  return Kundli.findById(id).populate('userId', 'name email phone').populate('eligibleOrderId', 'orderNumber total subtotal discount status createdAt').lean();
+  const doc = await Kundli.findById(id)
+    .populate('userId', 'name email phone')
+    .populate('eligibleOrderId', 'orderNumber total subtotal discount status payment.method payment.status createdAt')
+    .lean();
+  if (!doc) return null;
+  doc.pdfUrl = kundli.safePdfUrl(doc.pdfUrl);
+  // Details edited since the stored sections were calculated (press Regenerate to apply them).
+  doc.detailsChanged = Boolean(doc.generatedBirth && doc.birth && !kundli.sameBirth(doc.birth, doc.generatedBirth));
+  doc.running = kundli.isRunning(doc);
+  return doc;
 }
 
 exports.adminGet = asyncHandler(async (req, res) => {
@@ -78,29 +85,20 @@ exports.adminGet = asyncHandler(async (req, res) => {
   res.json({ kundli: doc, suggestions: doc.status === 'ready' ? await kundli.productsForSuggestions(doc) : {} });
 });
 
-// Fixes birth data. A record waiting for details starts generating; a generated one keeps its
-// result until an admin presses Regenerate (each run spends credits).
+// Fixes birth data (all staff). Only an admin save starts generation, and only for an eligible record that
+// is waiting for details; a generated Kundli keeps its result until an admin presses Regenerate.
 exports.adminUpdateDetails = asyncHandler(async (req, res) => {
   if (badId(req, res)) return;
-  const doc = await Kundli.findById(req.params.id);
-  if (!doc) return res.status(404).json({ message: 'Kundli not found.' });
-  if (doc.status === 'generating') return res.status(409).json({ message: 'This Kundli is generating. Try again when it finishes.' });
-  doc.birth = kundli.cleanBirth(req.body);
-  if (doc.status === 'details_needed' && doc.eligibleOrderId) await kundli.queue(doc);
-  else await doc.save();
+  const doc = await kundli.adminSaveDetails(req.params.id, req.body, { role: req.user?.role });
   res.json({ kundli: await adminDoc(doc._id) });
 });
 
 exports.adminGenerate = asyncHandler(async (req, res) => {
   if (badId(req, res)) return;
-  const doc = await Kundli.findById(req.params.id);
-  if (!doc) return res.status(404).json({ message: 'Kundli not found.' });
-  if (!kundli.hasBirth(doc)) return res.status(400).json({ message: 'Add the birth details first.' });
   if (!astrology.isConfigured()) {
     return res.status(503).json({ message: 'AstrologyAPI is not configured. Add ASTROLOGY_API_USER_ID and ASTROLOGY_API_KEY on the server.' });
   }
-  if (['generating', 'queued'].includes(doc.status)) return res.status(409).json({ message: 'This Kundli is already being generated.' });
-  await kundli.queue(doc, { force: true });
+  const doc = await kundli.adminGenerate(req.params.id);
   res.status(202).json({ kundli: await adminDoc(doc._id) });
 });
 

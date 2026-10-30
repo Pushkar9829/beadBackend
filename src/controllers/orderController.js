@@ -15,7 +15,6 @@ const { notify } = require('../services/notificationService');
 const cashfree = require('../services/cashfreeService');
 const ithink = require('../services/ithinkService');
 const { evaluateRequest } = require('../services/returnPolicy');
-const kundliService = require('../services/kundliService');
 
 const ORDER_STATUSES = ['pending_payment', 'paid', 'processing', 'packed', 'shipped', 'delivered', 'cancelled', 'returned'];
 const PAYMENT_STATUSES = ['pending', 'paid', 'failed', 'refunded'];
@@ -214,8 +213,8 @@ exports.create = asyncHandler(async (req, res) => {
       link: '/admin/orders',
       meta: { orderId: order._id, total: order.total },
     });
-    // Free Kundli for qualifying orders: background work, never blocks or fails checkout.
-    kundliService.onOrderConfirmed(order).catch((err) => console.warn(`[orders] kundli for ${order.orderNumber}:`, err.message));
+    // Free Kundli: not at placement. A COD order unlocks it once delivered and a UPI order once an admin
+    // marks it paid (Order model save hooks); Cashfree once paid (cashfreeService).
 
     cart.items = [];
     cart.couponCode = '';

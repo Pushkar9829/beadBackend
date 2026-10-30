@@ -85,6 +85,29 @@ orderSchema.post('save', async function restockAfterRto(doc) {
   }
 });
 
+// Free Kundli: a confirmed payment (payment.status -> paid) or delivery (status -> delivered) may unlock it.
+// Flagged before save and run after it, so every save path (admin status/payment edits, iThink tracking
+// sync and webhooks) is covered. Background work: it never blocks or fails the save.
+orderSchema.pre('save', function flagKundliCheck() {
+  if (this.isNew) return;
+  const delivered = this.isModified('status') && this.status === 'delivered';
+  const paid = this.isModified('payment.status') && this.payment?.status === 'paid';
+  if (delivered || paid) this.$locals.kundliCheck = true;
+});
+
+orderSchema.post('save', function kundliAfterSave(doc) {
+  if (!doc.$locals?.kundliCheck) return;
+  doc.$locals.kundliCheck = false;
+  try {
+    require('../services/kundliService')
+      .onOrderConfirmed(doc)
+      .catch((err) => console.warn(`[orders] kundli for ${doc.orderNumber}: ${err.message}`));
+  } catch (err) {
+    console.warn(`[orders] kundli for ${doc.orderNumber}: ${err.message}`);
+  }
+});
+
 orderSchema.index({ status: 1, 'payment.status': 1, createdAt: 1 });
+orderSchema.index({ userId: 1, createdAt: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

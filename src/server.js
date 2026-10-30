@@ -191,6 +191,8 @@ connectDb()
         .catch((err) => console.warn('Order expiry:', err.message));
     setInterval(runExpiry, 10 * 60 * 1000).unref();
     runExpiry();
+    // Free Kundli: fixes the launch cutoff on first start and re-runs generations that died mid-way.
+    await step('kundli jobs', () => require('./services/kundliService').startKundliJobs());
 
     app.listen(port, () => {
       const { s3Enabled } = require('./lib/objectStorage');

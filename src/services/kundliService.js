@@ -1,9 +1,17 @@
-// Free Kundli (AstrologyAPI "Standard" set) for customers whose order reaches the CMS threshold
-// (home content kundali.threshold, e.g. '₹2,000'). Flow: birth details are saved from the home modal or
-// Account → My Kundli; a confirmed qualifying order (COD/UPI placement or Cashfree payment) makes the
-// customer eligible; generation then runs once in the background and the result is stored.
+// Free Kundli (AstrologyAPI "Standard" set) for signed-in customers whose order reaches the CMS threshold
+// (home content kundali.threshold, e.g. '₹2,000').
+// Flow: birth details are saved from the home modal or Account → My Kundli (signed in only). An order
+// unlocks the Kundli once it is confirmed: online (Cashfree) or UPI orders when their payment is paid,
+// COD orders when they are delivered. Only confirmations at or after the launch cutoff count, and
+// cancelled, returned or refunded orders never do. Generation then runs once in the background.
+//
+// Every run goes through queue() (an atomic transition into 'queued') and generate() (an atomic claim
+// 'queued' -> 'generating'), so one Kundli can never be generated twice at the same time. Runs that
+// died (restart, OOM) are picked up by the stale checks and the periodic sweep (startKundliJobs).
 const mongoose = require('mongoose');
 const Kundli = require('../models/Kundli');
+const KundliSetting = require('../models/KundliSetting');
+const { KundliPlaceCache, KundliPlaceQuota } = require('../models/KundliPlace');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Product = require('../models/Product');
@@ -16,59 +24,178 @@ const { notify } = require('./notificationService');
 const astrology = require('./astrologyApi');
 
 const DEFAULT_THRESHOLD = 2000;
-// Cancelled/returned orders never qualify. COD/UPI orders count once placed (that is their
-// confirmation); Cashfree orders only once paid.
+// A threshold below this is treated as a CMS typo (e.g. "Rs. 2,000" misread) and ignored.
+const MIN_THRESHOLD = 500;
 const CLOSED_STATUSES = ['cancelled', 'returned'];
-
-function isConfirmed(order) {
-  if (!order || CLOSED_STATUSES.includes(order.status)) return false;
-  return !(order.status === 'pending_payment' && order.payment?.method === 'gateway');
-}
+const RUNNING = ['queued', 'generating'];
 const CONCURRENCY = 3;
 // A 'generating' claim older than this is assumed crashed and may be taken over.
-const STALE_RUN_MS = 5 * 60 * 1000;
-// Customers may re-submit birth details (which regenerates, spending credits) once per day.
+const RUN_STALE_MS = 5 * 60 * 1000;
+// A 'queued' record whose run never started (process died in between) is picked up after this.
+const QUEUE_STALE_MS = 2 * 60 * 1000;
+const SWEEP_MS = 2 * 60 * 1000;
+// Customers may change the details of a generated Kundli (which regenerates it, spending credits) once a
+// day, and at most KUNDLI_CUSTOMER_REGEN_CAP times in total. Admin regenerations are not limited.
 const CUSTOMER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const EMAIL_RX = /^[^\s@]{1,64}@[^\s@]{1,253}\.[^\s@]{2,}$/;
+// Minimum gap between two customer-started runs (e.g. retrying a failed Kundli).
+const CUSTOMER_RETRY_GAP_MS = 10 * 60 * 1000;
 const DATE_RX = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_RX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-function badRequest(message, status = 400) {
+function envInt(name, fallback, min = 0) {
+  const n = Number.parseInt(process.env[name], 10);
+  return Number.isInteger(n) && n >= min ? n : fallback;
+}
+const regenCap = () => envInt('KUNDLI_CUSTOMER_REGEN_CAP', 3);
+const retryCap = () => envInt('KUNDLI_CUSTOMER_RETRY_CAP', 3);
+
+function badRequest(message, status = 400, code) {
   const err = new Error(message);
   err.status = status;
+  if (code) err.code = code;
   return err;
+}
+
+const warned = new Set();
+function warnOnce(message) {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn(`[kundli] ${message}`);
+}
+
+function istWhen(date) {
+  return new Date(date).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
 /* ---------------- threshold ---------------- */
 
-/** CMS threshold (single source of truth): '₹2,000' -> 2000; falls back to 2000. */
+/**
+ * '₹2,000' / 'Rs. 2,000' / 'Rs.2000' / '2000' -> 2000; '₹2k' -> 2000; '2.5k' -> 2500; '₹1 lakh' -> 100000.
+ * Anything unreadable or below MIN_THRESHOLD falls back to 2000 (with a warning).
+ */
+function parseThreshold(label) {
+  return thresholdOf(label).value;
+}
+
+function thresholdOf(label) {
+  const text = String(label || '').trim();
+  const m = /(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|l|lakh|lac)?\b/i.exec(text);
+  let value = m ? Number(m[1].replace(/,/g, '')) : NaN;
+  const unit = (m?.[2] || '').toLowerCase();
+  if (unit === 'k' || unit === 'thousand') value *= 1000;
+  else if (unit) value *= 100000;
+  if (!Number.isFinite(value) || value < MIN_THRESHOLD) {
+    if (text) warnOnce(`kundali.threshold "${text}" is not a usable amount (minimum ₹${MIN_THRESHOLD}); using ₹${DEFAULT_THRESHOLD}.`);
+    return { value: DEFAULT_THRESHOLD, ok: false };
+  }
+  return { value: Math.round(value), ok: true };
+}
+
+/** CMS threshold (single source of truth). */
 async function getThreshold() {
   const stored = await SiteContent.findOne({ key: 'main' }).lean();
   const label = String(mergeHomeContent(stored)?.kundali?.threshold || '').trim();
-  const value = Number(label.replace(/[^\d.]/g, ''));
-  return {
-    value: Number.isFinite(value) && value > 0 ? value : DEFAULT_THRESHOLD,
-    label: label || `₹${DEFAULT_THRESHOLD.toLocaleString('en-IN')}`,
-  };
+  const { value, ok } = thresholdOf(label);
+  return { value, label: ok ? label : `₹${value.toLocaleString('en-IN')}` };
 }
+
+/* ---------------- launch cutoff ---------------- */
+
+let eligibleFromCache = null;
+
+/** KUNDLI_ELIGIBLE_FROM as a Date: 'YYYY-MM-DD' is midnight IST; any other ISO string is used as is. */
+function envEligibleFrom() {
+  const raw = String(process.env.KUNDLI_ELIGIBLE_FROM || '').trim();
+  if (!raw) return null;
+  const d = DATE_RX.test(raw) ? new Date(`${raw}T00:00:00+05:30`) : new Date(raw);
+  if (Number.isNaN(d.getTime())) {
+    warnOnce(`KUNDLI_ELIGIBLE_FROM "${raw}" is not a valid date; using the stored launch date.`);
+    return null;
+  }
+  return d;
+}
+
+/**
+ * Orders confirmed (paid or delivered) before this date never unlock a Kundli.
+ * KUNDLI_ELIGIBLE_FROM wins; otherwise the date the Kundli settings document was first created (the first
+ * start of this version), stored in Mongo so it never moves on a restart or a second instance.
+ */
+async function getEligibleFrom() {
+  const fromEnv = envEligibleFrom();
+  if (fromEnv) return fromEnv;
+  if (eligibleFromCache) return eligibleFromCache;
+  let doc;
+  try {
+    doc = await KundliSetting.findOneAndUpdate(
+      { key: 'main' },
+      { $setOnInsert: { key: 'main', eligibleFrom: new Date() } },
+      { upsert: true, returnDocument: 'after' }
+    ).lean();
+  } catch (err) {
+    if (err.code !== 11000) throw err;
+    doc = await KundliSetting.findOne({ key: 'main' }).lean(); // created concurrently
+  }
+  eligibleFromCache = doc.eligibleFrom;
+  return eligibleFromCache;
+}
+
+/* ---------------- qualifying orders ---------------- */
 
 // Decision: an order qualifies on its goods value after discounts (subtotal − discount), excluding
-// shipping and GST. Same base as the free-shipping threshold in checkoutService.
+// shipping and GST, less any partial refund. Same base as the free-shipping threshold in checkoutService.
 function qualifyingAmount(order) {
-  return Math.max(0, (Number(order?.subtotal) || 0) - (Number(order?.discount) || 0));
+  const goods = (Number(order?.subtotal) || 0) - (Number(order?.discount) || 0);
+  return Math.max(0, goods - (Number(order?.payment?.refundedAmount) || 0));
 }
 
-async function findQualifyingOrder(userId, min) {
+function firstTimeline(order, status) {
+  const hit = (order?.timeline || []).find((t) => t && t.status === status && t.at);
+  return hit ? new Date(hit.at) : null;
+}
+
+/** When the order became confirmed: delivery for COD, payment capture otherwise. */
+function confirmedAt(order) {
+  if (order?.payment?.method === 'cod') return firstTimeline(order, 'delivered') || (order.updatedAt ? new Date(order.updatedAt) : null);
+  return (order?.payment?.capturedAt && new Date(order.payment.capturedAt)) || firstTimeline(order, 'paid') || (order?.updatedAt ? new Date(order.updatedAt) : null);
+}
+
+/**
+ * Whether an order unlocks the Kundli right now. COD: delivered. Cashfree / UPI / other: payment paid.
+ * Never cancelled, returned or refunded; confirmed at or after `from`; goods value >= `min` (unless
+ * `min` is omitted, used when re-checking an order that was already accepted).
+ */
+function orderQualifies(order, { min, from } = {}) {
+  if (!order || CLOSED_STATUSES.includes(order.status)) return false;
+  if (order.payment?.status === 'refunded') return false;
+  const confirmed = order.payment?.method === 'cod' ? order.status === 'delivered' : order.payment?.status === 'paid';
+  if (!confirmed) return false;
+  if (from) {
+    const at = confirmedAt(order);
+    if (!at || at < from) return false;
+  }
+  if (min !== undefined && qualifyingAmount(order) < min) return false;
+  return true;
+}
+
+const ORDER_FIELDS = '_id orderNumber userId email subtotal discount status payment timeline createdAt updatedAt';
+
+async function findQualifyingOrder(userId, min, from) {
   if (!userId) return null;
-  return Order.findOne({
+  const candidates = await Order.find({
     userId,
     status: { $nin: CLOSED_STATUSES },
-    $nor: [{ status: 'pending_payment', 'payment.method': 'gateway' }],
+    'payment.status': { $ne: 'refunded' },
+    $or: [
+      { 'payment.method': 'cod', status: 'delivered' },
+      { 'payment.method': { $ne: 'cod' }, 'payment.status': 'paid' },
+    ],
     $expr: { $gte: [{ $subtract: ['$subtotal', { $ifNull: ['$discount', 0] }] }, min] },
   })
     .sort({ createdAt: 1 })
-    .select('_id orderNumber createdAt')
+    .select(ORDER_FIELDS)
+    .limit(50)
     .lean();
+  return candidates.find((o) => orderQualifies(o, { min, from })) || null;
 }
 
 /* ---------------- birth details ---------------- */
@@ -153,6 +280,11 @@ function cleanBirth(raw) {
   };
 }
 
+function plainBirth(birth) {
+  if (!birth) return birth;
+  return typeof birth.toObject === 'function' ? birth.toObject() : { ...birth };
+}
+
 function sameBirth(a, b) {
   if (!a || !b) return false;
   return ['name', 'gender', 'dob', 'tob', 'tobUnknown', 'place', 'lat', 'lon', 'timezoneId'].every((k) => String(a[k] ?? '') === String(b[k] ?? ''));
@@ -162,25 +294,33 @@ function hasBirth(kundli) {
   return Boolean(kundli?.birth?.dob && kundli.birth.timezoneId);
 }
 
+/* ---------------- run state ---------------- */
+
+/** True while a run is genuinely in progress (a stale 'queued'/'generating' does not count). */
+function isRunning(kundli, now = Date.now()) {
+  const t = Number(now);
+  if (kundli?.status === 'generating') return Boolean(kundli.runStartedAt) && new Date(kundli.runStartedAt).getTime() > t - RUN_STALE_MS;
+  if (kundli?.status === 'queued') return Boolean(kundli.queuedAt) && new Date(kundli.queuedAt).getTime() > t - QUEUE_STALE_MS;
+  return false;
+}
+
+function staleRunFilter(now) {
+  const t = Number(now);
+  return [
+    { status: 'queued', $or: [{ queuedAt: { $lt: new Date(t - QUEUE_STALE_MS) } }, { queuedAt: { $exists: false } }] },
+    { status: 'generating', $or: [{ runStartedAt: { $lt: new Date(t - RUN_STALE_MS) } }, { runStartedAt: { $exists: false } }] },
+  ];
+}
+
+function notRunningFilter(now) {
+  return { $or: [{ status: { $nin: RUNNING } }, ...staleRunFilter(now)] };
+}
+
 /* ---------------- records ---------------- */
 
-/** The customer's Kundli; links an email-only (signed-out modal) record to the account on first sight. */
 async function findForUser(user) {
   if (!user?._id) return null;
-  const own = await Kundli.findOne({ userId: user._id });
-  if (own) return own;
-  const email = String(user.email || '').toLowerCase();
-  if (!email) return null;
-  try {
-    return await Kundli.findOneAndUpdate(
-      { email, userId: { $exists: false } },
-      { $set: { userId: user._id } },
-      { returnDocument: 'after', sort: { updatedAt: -1 } }
-    );
-  } catch (err) {
-    if (err.code === 11000) return Kundli.findOne({ userId: user._id }); // linked concurrently
-    throw err;
-  }
+  return Kundli.findOne({ userId: user._id });
 }
 
 async function findOrCreateForUser(user, defaults = {}) {
@@ -197,7 +337,7 @@ async function findOrCreateForUser(user, defaults = {}) {
 async function markEligible(kundli, order) {
   if (!order?._id || kundli.eligibleOrderId) return kundli;
   const now = new Date();
-  // Recorded once: a later order never moves the eligibility.
+  // Recorded once: a later order never moves a valid eligibility.
   const res = await Kundli.updateOne(
     { _id: kundli._id, eligibleOrderId: { $exists: false } },
     { $set: { eligibleOrderId: order._id, eligibleOrderNumber: order.orderNumber, eligibleAt: now } }
@@ -210,114 +350,176 @@ async function markEligible(kundli, order) {
   return kundli;
 }
 
-/** Fire-and-forget generation; errors are logged, never thrown into the caller. */
-function startGeneration(kundliId, opts) {
-  generate(kundliId, opts).catch((err) => console.error(`[kundli] generation ${kundliId} failed:`, err.message));
+/**
+ * Re-checks the Kundli's eligibility against the orders as they are now. Keeps a still-valid eligible
+ * order; otherwise moves to another qualifying order, or clears the eligibility. Returns true if eligible.
+ */
+async function ensureEligible(kundli, ctx) {
+  if (!kundli?.userId) return false;
+  const { threshold, from } = ctx || { threshold: await getThreshold(), from: await getEligibleFrom() };
+  if (kundli.eligibleOrderId) {
+    const current = await Order.findById(kundli.eligibleOrderId).select(ORDER_FIELDS).lean();
+    // An order that was accepted stays accepted while it is valid, even if the threshold changes later.
+    if (orderQualifies(current, { from })) return true;
+  }
+  const other = await findQualifyingOrder(kundli.userId, threshold.value, from);
+  if (other) {
+    const now = new Date();
+    await Kundli.updateOne({ _id: kundli._id }, { $set: { eligibleOrderId: other._id, eligibleOrderNumber: other.orderNumber, eligibleAt: now } });
+    kundli.eligibleOrderId = other._id;
+    kundli.eligibleOrderNumber = other.orderNumber;
+    kundli.eligibleAt = now;
+    return true;
+  }
+  if (kundli.eligibleOrderId) {
+    await Kundli.updateOne({ _id: kundli._id }, { $unset: { eligibleOrderId: 1, eligibleOrderNumber: 1, eligibleAt: 1 } });
+    kundli.eligibleOrderId = undefined;
+    kundli.eligibleOrderNumber = undefined;
+    kundli.eligibleAt = undefined;
+  }
+  return false;
 }
 
-async function queue(kundli, { force = false } = {}) {
-  kundli.status = 'queued';
-  kundli.lastError = undefined;
-  await kundli.save();
-  startGeneration(kundli._id, { force });
-  return kundli;
+/** Fire-and-forget generation; errors are logged, never thrown into the caller. */
+function startGeneration(kundliId) {
+  generate(kundliId).catch((err) => console.error(`[kundli] generation ${kundliId} failed:`, err.message));
 }
 
 /**
- * Brings a customer's record up to date with their orders (also covers orders confirmed before this
- * feature, or paid by admin action): eligible + details -> generate; eligible without details -> ask.
+ * The only way into a run: an atomic transition to 'queued' that never matches a record whose run is in
+ * progress (a stale one may be replaced). `allow` limits the statuses it may start from; `filter` adds
+ * conditions (e.g. a counter below its cap); `set`/`inc` are applied in the same write. Returns the
+ * queued record, or null when nothing was queued.
  */
-async function syncEligibility(kundli, user, threshold) {
-  if (kundli && !['awaiting_order', 'details_needed'].includes(kundli.status)) return kundli;
-  let doc = kundli;
-  if (!doc?.eligibleOrderId) {
-    const order = await findQualifyingOrder(user._id, threshold.value);
-    if (!order) return doc;
-    doc = doc || (await findOrCreateForUser(user, { status: 'details_needed' }));
-    await markEligible(doc, order);
-  }
-  if (hasBirth(doc)) return queue(doc);
-  if (doc.status !== 'details_needed') {
-    doc.status = 'details_needed';
-    await doc.save();
-  }
+async function queue(kundliId, { by = 'system', allow, filter = {}, set = {}, inc = {} } = {}) {
+  const now = new Date();
+  // Needs birth details: already stored, or written by this same update.
+  const match = { _id: kundliId, ...(set.birth?.dob ? {} : { 'birth.dob': { $exists: true } }), ...filter, $and: [notRunningFilter(now)] };
+  if (allow) match.$and.push({ status: { $in: allow } });
+  const update = { $set: { ...set, status: 'queued', queuedAt: now, runBy: by } };
+  if (Object.keys(inc).length) update.$inc = inc;
+  const doc = await Kundli.findOneAndUpdate(match, update, { returnDocument: 'after' });
+  if (doc) startGeneration(doc._id);
   return doc;
 }
 
-/**
- * Saves birth details from the home modal or My Kundli.
- * Signed in (`user`): upsert by userId; generates when an eligible order exists.
- * Signed out (`email`): upsert an email-only record, linked to the account on its first qualifying order.
- */
-async function saveDetails({ user, email, details }) {
-  const birth = cleanBirth(details);
+/** Re-runs records whose run died (restart/crash): stale 'queued' and stale 'generating'. */
+async function sweepStale() {
+  const stale = await Kundli.find({ $or: staleRunFilter(new Date()) }).select('_id').limit(25).lean();
+  for (const { _id } of stale) startGeneration(_id);
+  return stale.length;
+}
 
-  if (!user) {
-    const mail = toStr(email, 254).toLowerCase();
-    if (!mail || !EMAIL_RX.test(mail)) throw badRequest('A valid email is required.');
-    // A record already linked to an account is only changed by its signed-in owner (no details leak either).
-    const linked = await Kundli.exists({ email: mail, userId: { $exists: true } });
-    if (linked) return { kundli: null, status: 'awaiting_order' };
-    const kundli = await Kundli.findOneAndUpdate(
-      { email: mail, userId: { $exists: false } },
-      { $set: { birth, language: 'en' }, $setOnInsert: { email: mail, status: 'awaiting_order' } },
-      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
-    );
-    return { kundli, status: kundli.status };
+let sweepTimer = null;
+/** Called once after the DB connects: fixes the launch cutoff and starts the stale-run sweep. */
+async function startKundliJobs() {
+  const from = await getEligibleFrom();
+  console.log(`[kundli] orders confirmed from ${from.toISOString()} unlock the free Kundli${envEligibleFrom() ? ' (KUNDLI_ELIGIBLE_FROM)' : ''}.`);
+  const run = () => sweepStale().catch((err) => console.warn('[kundli] sweep:', err.message));
+  if (!sweepTimer) {
+    sweepTimer = setInterval(run, SWEEP_MS);
+    sweepTimer.unref();
+  }
+  run();
+}
+
+/* ---------------- customer actions ---------------- */
+
+/**
+ * Saves birth details (home modal or Account → My Kundli; signed in only) and starts generation when the
+ * customer is eligible.
+ * - Not generated yet: generates when an eligible order exists, otherwise waits for one.
+ * - Failed (no good Kundli yet): a retry, at most KUNDLI_CUSTOMER_RETRY_CAP times, 10 min apart.
+ * - Generated: a regeneration with new details, once a day, at most KUNDLI_CUSTOMER_REGEN_CAP times.
+ */
+async function saveDetails({ user, details }) {
+  if (!user?._id) throw badRequest('Please sign in to save your birth details.', 401);
+  const birth = cleanBirth(details);
+  const now = Date.now();
+  const kundli = await findOrCreateForUser(user, { status: 'awaiting_order' });
+  if (isRunning(kundli, now)) throw badRequest('Your Kundli is being prepared. Please try again in a minute.', 409);
+
+  const generated = Boolean(kundli.generatedAt);
+  const failedFirst = kundli.status === 'failed' && !generated;
+  const shown = kundli.generatedBirth || kundli.birth;
+  if (generated && kundli.status === 'ready' && sameBirth(shown, birth)) return { kundli, status: kundli.status };
+
+  const set = { birth, language: 'en' };
+  if (!kundli.email && user.email) set.email = String(user.email).toLowerCase();
+  const since = (d) => (d ? now - new Date(d).getTime() : Infinity);
+
+  if (generated || failedFirst) {
+    if (since(kundli.runStartedAt) < CUSTOMER_RETRY_GAP_MS) {
+      throw badRequest(`Please wait a few minutes before trying again (after ${istWhen(new Date(kundli.runStartedAt).getTime() + CUSTOMER_RETRY_GAP_MS)}).`, 429);
+    }
+    let filter;
+    let inc;
+    if (generated) {
+      if ((kundli.customerRegens || 0) >= regenCap()) {
+        throw badRequest('Your Kundli has already been updated the maximum number of times. Please contact us to change the birth details.', 429, 'regen_cap');
+      }
+      if (since(kundli.generatedAt) < CUSTOMER_COOLDOWN_MS) {
+        throw badRequest(`Birth details can be changed once a day. You can update them again after ${istWhen(new Date(kundli.generatedAt).getTime() + CUSTOMER_COOLDOWN_MS)}.`, 429);
+      }
+      filter = { customerRegens: { $not: { $gte: regenCap() } } };
+      inc = { customerRegens: 1 };
+    } else {
+      if ((kundli.customerRetries || 0) >= retryCap()) {
+        throw badRequest('We could not prepare your Kundli after several tries. Our team has been notified and will contact you.', 429, 'retry_cap');
+      }
+      filter = { customerRetries: { $not: { $gte: retryCap() } } };
+      inc = { customerRetries: 1 };
+    }
+    if (!(await ensureEligible(kundli))) {
+      throw badRequest('Your qualifying order is no longer active, so the Kundli cannot be prepared again.', 409);
+    }
+    const queued = await queue(kundli._id, { by: 'customer', allow: ['ready', 'failed'], filter, set, inc });
+    if (!queued) throw badRequest('Your Kundli is being prepared. Please try again in a minute.', 409);
+    return { kundli: queued, status: queued.status };
   }
 
-  const threshold = await getThreshold();
-  const kundli = await findOrCreateForUser(user, { status: 'awaiting_order' });
-  if (kundli.status === 'generating' || kundli.status === 'queued') {
+  // Not generated yet (awaiting order / details needed).
+  Object.assign(kundli, set);
+  if (await ensureEligible(kundli)) {
+    const queued = await queue(kundli._id, { by: 'customer', allow: ['awaiting_order', 'details_needed'], set });
+    if (queued) return { kundli: queued, status: queued.status };
     throw badRequest('Your Kundli is being prepared. Please try again in a minute.', 409);
   }
-  const generated = ['ready', 'failed'].includes(kundli.status) && kundli.runStartedAt;
-  if (generated && sameBirth(kundli.birth, birth)) return { kundli, status: kundli.status };
-  if (generated) {
-    const next = new Date(kundli.runStartedAt).getTime() + CUSTOMER_COOLDOWN_MS;
-    if (next > Date.now()) {
-      const when = new Date(next).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-      throw badRequest(`Birth details can be changed once a day. You can update them again after ${when}.`, 429);
-    }
-  }
+  const saved = await Kundli.findOneAndUpdate(
+    { _id: kundli._id, status: { $in: ['awaiting_order', 'details_needed'] } },
+    { $set: { ...set, status: 'awaiting_order' } },
+    { returnDocument: 'after' }
+  );
+  if (!saved) throw badRequest('Your Kundli is being prepared. Please try again in a minute.', 409);
+  return { kundli: saved, status: saved.status };
+}
 
-  kundli.birth = birth;
-  kundli.language = 'en';
-  if (!kundli.email && user.email) kundli.email = String(user.email).toLowerCase();
-  if (!kundli.eligibleOrderId) {
-    const order = await findQualifyingOrder(user._id, threshold.value);
-    if (order) await markEligible(kundli, order);
-  }
-  if (kundli.eligibleOrderId) {
-    await queue(kundli, { force: true });
-  } else {
-    kundli.status = 'awaiting_order';
-    await kundli.save();
-  }
-  return { kundli, status: kundli.status };
+/** POST /api/kundli/retry: re-runs a failed Kundli with the saved details (same limits as an edit). */
+async function retry(user) {
+  const kundli = await findForUser(user);
+  if (!kundli || kundli.status !== 'failed' || !hasBirth(kundli)) throw badRequest('There is nothing to retry.', 409);
+  return saveDetails({ user, details: plainBirth(kundli.birth) });
 }
 
 /**
- * Order hook (COD/UPI placement, Cashfree payment). Idempotent and safe to call more than once;
- * callers must not await it into checkout (see the call sites).
+ * Order hook: Cashfree payment (cashfreeService) and the Order save hooks (admin marks a payment paid,
+ * a status becomes delivered, iThink tracking). Re-reads the order, so it is safe to call with a stale
+ * copy and more than once. Callers must not await it into checkout or the save path.
  */
-async function onOrderConfirmed(order) {
-  if (!order?.userId || !isConfirmed(order)) return null;
-  const threshold = await getThreshold();
-  if (qualifyingAmount(order) < threshold.value) return null;
+async function onOrderConfirmed(orderLike) {
+  if (!orderLike?._id) return null;
+  const order = await Order.findById(orderLike._id).select(ORDER_FIELDS).lean();
+  if (!order?.userId) return null;
+  const [threshold, from] = await Promise.all([getThreshold(), getEligibleFrom()]);
+  if (!orderQualifies(order, { min: threshold.value, from })) return null;
 
   const user = (await User.findById(order.userId).select('email').lean()) || { _id: order.userId };
-  const email = user.email || order.email;
-  const kundli = await findOrCreateForUser({ _id: order.userId, email }, { status: 'details_needed' });
+  const kundli = await findOrCreateForUser({ _id: order.userId, email: user.email || order.email }, { status: 'details_needed' });
   await markEligible(kundli, order);
 
-  // Never regenerate a ready (or running) Kundli because of another order.
-  if (['ready', 'generating', 'queued'].includes(kundli.status)) return kundli;
-  if (hasBirth(kundli)) return queue(kundli);
-  if (kundli.status !== 'details_needed') {
-    kundli.status = 'details_needed';
-    await kundli.save();
-  }
+  // Never regenerates a ready (or running) Kundli because of another order: only these statuses start.
+  if (hasBirth(kundli)) return (await queue(kundli._id, { by: 'system', allow: ['awaiting_order', 'details_needed'] })) || kundli;
+  await Kundli.updateOne({ _id: kundli._id, status: 'awaiting_order' }, { $set: { status: 'details_needed' } });
   return kundli;
 }
 
@@ -354,7 +556,7 @@ async function pdfFields(birth, body) {
 
 function svgFrom(res) {
   const svg = typeof res === 'string' ? res : res?.svg || res?.chart || '';
-  if (!/^\s*<svg[\s>]/i.test(String(svg))) throw new Error('AstrologyAPI chart response had no SVG.');
+  if (!astrology.looksLikeSvg(svg)) throw new Error('AstrologyAPI chart response had no SVG.');
   return String(svg);
 }
 
@@ -371,27 +573,41 @@ async function pool(tasks, limit) {
   await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
 }
 
+function hasSections(kundli) {
+  const s = kundli?.sections || {};
+  return Kundli.KUNDLI_SECTIONS.some((k) => s[k] !== undefined && s[k] !== null);
+}
+
 /**
- * Calls the 8 Standard endpoints and stores the result. Partial results are kept: the Kundli is
- * 'ready' when at least one data section succeeded (a PDF failure alone never fails it), 'failed'
- * when every data section failed. An atomic claim prevents two runs at once.
- * `force` regenerates a Kundli that is already 'ready'.
+ * Runs a queued Kundli: calls the 8 Standard endpoints and stores the result. Partial results are kept:
+ * 'ready' when at least one data section succeeded (a PDF failure alone never fails it), 'failed' when
+ * every data section failed. A failed regeneration keeps the previous good Kundli. Only a 'queued' (or a
+ * stale 'generating') record can be claimed, atomically, so a Kundli never runs twice at once.
  */
-async function generate(kundliId, { force = false } = {}) {
+async function generate(kundliId) {
   if (!mongoose.isValidObjectId(kundliId)) throw badRequest('Kundli not found.', 404);
   const now = new Date();
-  const claimFilter = {
-    _id: kundliId,
-    'birth.dob': { $exists: true },
-    $or: [{ status: { $ne: 'generating' } }, { runStartedAt: { $lt: new Date(now.getTime() - STALE_RUN_MS) } }],
-  };
-  if (!force) claimFilter.status = { $ne: 'ready' };
+  const current = await Kundli.findById(kundliId);
+  if (!current) return null;
+  const claimable = current.status === 'queued' || (current.status === 'generating' && !isRunning(current, now));
+  if (!claimable || !hasBirth(current)) return current;
+
+  const hadGood = Boolean(current.generatedAt) && hasSections(current);
+  // Eligibility is re-checked at run time (the order may have been cancelled, returned or refunded since).
+  // Admin regenerations are the admin's call.
+  if (current.runBy !== 'admin' && !(await ensureEligible(current))) {
+    const $set = { status: hadGood ? 'ready' : 'awaiting_order', lastError: 'The qualifying order is no longer active.' };
+    if (hadGood && current.generatedBirth) $set.birth = plainBirth(current.generatedBirth);
+    await Kundli.updateOne({ _id: current._id, status: current.status, queuedAt: current.queuedAt }, { $set });
+    return Kundli.findById(current._id);
+  }
+
   const kundli = await Kundli.findOneAndUpdate(
-    claimFilter,
+    { _id: current._id, 'birth.dob': { $exists: true }, $or: [{ status: 'queued' }, staleRunFilter(now)[1]] },
     { $set: { status: 'generating', runStartedAt: now }, $inc: { attempts: 1 } },
     { returnDocument: 'after' }
   );
-  if (!kundli) return Kundli.findById(kundliId); // already running, already ready, or no details
+  if (!kundli) return Kundli.findById(current._id); // claimed by another run
 
   const body = birthBody(kundli.birth);
   const sections = {};
@@ -406,9 +622,11 @@ async function generate(kundliId, { force = false } = {}) {
       return;
     }
     try {
-      calls += 1;
       sections[key] = await fn();
+      calls += 1;
     } catch (err) {
+      // Only requests that reached AstrologyAPI count (not "not configured" or a network failure).
+      if (err.billed !== false) calls += 1;
       errors[key] = err.message || 'Request failed.';
       if (['auth', 'credits', 'not_configured'].includes(err.code)) fatal = err;
     }
@@ -436,38 +654,55 @@ async function generate(kundliId, { force = false } = {}) {
   const failedKeys = Object.keys(errors);
   const okData = dataKeys.filter((k) => sections[k] !== undefined && !errors[k]);
   const status = okData.length ? 'ready' : 'failed';
-  const lastError = status === 'failed'
+  const runError = status === 'failed'
     ? fatal?.message || errors.astro || Object.values(errors)[0] || 'Generation failed.'
     : failedKeys.length
       ? `Missing: ${failedKeys.join(', ')}.`
       : undefined;
 
-  const $set = {
-    status,
-    sections: { ...Object.fromEntries(dataKeys.map((k) => [k, sections[k]]).filter(([, v]) => v !== undefined)), errors },
-  };
+  let $set;
   const $unset = {};
-  if (pdfUrl) $set.pdfUrl = pdfUrl;
-  else $unset.pdfUrl = 1;
-  if (status === 'ready') $set.generatedAt = new Date();
-  if (lastError) $set.lastError = lastError;
-  else $unset.lastError = 1;
+  const $inc = { apiCalls: calls };
+  const keptPrevious = status === 'failed' && hadGood;
+  if (keptPrevious) {
+    // A failed regeneration never wipes a good Kundli: keep its sections, PDF and the birth details they
+    // were made from; record the error only.
+    $set = { status: 'ready', lastError: `Regeneration failed: ${runError}`, updateFailedAt: new Date() };
+    if (kundli.generatedBirth) $set.birth = plainBirth(kundli.generatedBirth);
+  } else {
+    $set = {
+      status,
+      sections: { ...Object.fromEntries(dataKeys.map((k) => [k, sections[k]]).filter(([, v]) => v !== undefined)), errors },
+    };
+    if (pdfUrl) $set.pdfUrl = pdfUrl;
+    else $unset.pdfUrl = 1;
+    if (status === 'ready') {
+      $set.generatedAt = new Date();
+      $set.generatedBirth = plainBirth(kundli.birth);
+      $unset.updateFailedAt = 1;
+    }
+    if (runError) $set.lastError = runError;
+    else $unset.lastError = 1;
+  }
 
   // Only the run that holds the claim writes its result.
   const saved = await Kundli.findOneAndUpdate(
     { _id: kundli._id, runStartedAt: now },
-    { $set, $unset, $inc: { apiCalls: calls } },
+    { $set, ...(Object.keys($unset).length ? { $unset } : {}), $inc },
     { returnDocument: 'after' }
   );
   if (!saved) await Kundli.updateOne({ _id: kundli._id }, { $inc: { apiCalls: calls } });
 
   if (failedKeys.length) {
     const who = kundli.birth?.name || kundli.email || String(kundli._id);
+    let title = `Kundli for ${who} is missing ${failedKeys.length} section(s)`;
+    if (keptPrevious) title = `Kundli regeneration failed for ${who} (previous Kundli kept)`;
+    else if (status === 'failed') title = `Kundli generation failed for ${who}`;
     try {
       await notify({
         type: 'system',
-        title: status === 'failed' ? `Kundli generation failed for ${who}` : `Kundli for ${who} is missing ${failedKeys.length} section(s)`,
-        body: String(lastError || '').slice(0, 280),
+        title,
+        body: String(runError || '').slice(0, 280),
         link: '/admin/kundli',
         meta: { kundliId: kundli._id, errors },
       });
@@ -480,9 +715,12 @@ async function generate(kundliId, { force = false } = {}) {
 
 /* ---------------- place search ---------------- */
 
-const PLACE_TTL_MS = 24 * 60 * 60 * 1000;
-const PLACE_CACHE_MAX = 500;
-const placeCache = new Map();
+const PLACE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const placesDailyCap = () => envInt('KUNDLI_PLACES_DAILY_CAP', 500);
+
+function istDay(date = new Date()) {
+  return new Date(date.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
 
 function countryName(code) {
   try {
@@ -492,13 +730,40 @@ function countryName(code) {
   }
 }
 
-/** geo_details proxy: "City, Country" options with coordinates and IANA time zone. Cached per query for 24h. */
+/** Reserves one uncached geo_details lookup in today's (IST) global budget. False once the cap is reached. */
+async function reservePlaceLookup() {
+  const cap = placesDailyCap();
+  if (cap <= 0) return false;
+  const day = istDay();
+  const inc = { $inc: { count: 1 } };
+  try {
+    const doc = await KundliPlaceQuota.findOneAndUpdate(
+      { _id: day, count: { $lt: cap } },
+      { ...inc, $setOnInsert: { expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) } },
+      { upsert: true, returnDocument: 'after' }
+    );
+    return Boolean(doc);
+  } catch (err) {
+    if (err.code !== 11000) throw err;
+    // Today's counter exists (created concurrently, or the cap is reached): increment it only if under the cap.
+    return Boolean(await KundliPlaceQuota.findOneAndUpdate({ _id: day, count: { $lt: cap } }, inc));
+  }
+}
+
+/**
+ * geo_details proxy: "City, Country" options with coordinates and IANA time zone. Results are cached in
+ * Mongo per query (30 days, shared by every instance); new lookups are capped per IST day.
+ */
 async function searchPlaces(rawQuery) {
   const q = toStr(rawQuery, 60).replace(/\s+/g, ' ').toLowerCase();
   if (q.length < 3) throw badRequest('Type at least 3 letters of the place.');
-  const hit = placeCache.get(q);
-  if (hit && hit.at > Date.now() - PLACE_TTL_MS) return hit.places;
+  const cached = await KundliPlaceCache.findOne({ q, expiresAt: { $gt: new Date() } }).lean();
+  if (cached) return cached.places;
 
+  if (!(await reservePlaceLookup())) {
+    warnOnce(`Place search daily cap (${placesDailyCap()}) reached for ${istDay()}.`);
+    throw badRequest('Place search is busy, please try again later.', 429, 'places_cap');
+  }
   const res = await astrology.call('geo_details', { place: q, maxRows: 6 });
   const places = (Array.isArray(res?.geonames) ? res.geonames : [])
     .map((g) => {
@@ -518,8 +783,11 @@ async function searchPlaces(rawQuery) {
     })
     .filter((p) => p.name && Number.isFinite(p.lat) && Number.isFinite(p.lon) && validTimezone(p.timezoneId));
 
-  if (placeCache.size >= PLACE_CACHE_MAX) placeCache.delete(placeCache.keys().next().value);
-  placeCache.set(q, { at: Date.now(), places });
+  try {
+    await KundliPlaceCache.updateOne({ q }, { $set: { places, expiresAt: new Date(Date.now() + PLACE_CACHE_TTL_MS) } }, { upsert: true });
+  } catch (err) {
+    if (err.code !== 11000) console.warn('[kundli] place cache write failed:', err.message);
+  }
   return places;
 }
 
@@ -527,28 +795,29 @@ async function searchPlaces(rawQuery) {
 
 const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen'];
 
-/** "Five Faced" / "5 Mukhi" -> ['five mukhi', '5 mukhi', '5-mukhi']. */
+/** "Five Faced" / "5 Mukhi" -> ['five mukhi', '5 mukhi'] ("5-mukhi" also matches: [\s-]* in matchCards). */
 function rudrakshaTerms(name) {
-  const text = String(name || '').toLowerCase();
-  const digit = /(\d{1,2})/.exec(text)?.[1];
+  const text = typeof name === 'string' ? name.toLowerCase() : '';
+  const digit = /(?<!\d)(\d{1,2})(?!\d)/.exec(text)?.[1];
   const wordIdx = NUMBER_WORDS.findIndex((w) => new RegExp(`\\b${w}\\b`).test(text));
   const n = digit ? Number(digit) : wordIdx > 0 ? wordIdx : null;
   if (!n) return text ? [text.replace(/\b(faced|face|mukhi|rudraksha)\b/g, '').trim()].filter(Boolean) : [];
-  return [`${NUMBER_WORDS[n] || n} mukhi`, `${n} mukhi`, `${n}-mukhi`];
+  return [`${NUMBER_WORDS[n] || n} mukhi`, `${n} mukhi`];
 }
 
 function gemTerms(gem) {
   if (!gem || typeof gem !== 'object') return [];
-  const semi = String(gem.semi_gem || '')
+  const semi = String(typeof gem.semi_gem === 'string' ? gem.semi_gem : '')
     .split(/,|\/|\bor\b|\band\b/i)
     .map((s) => s.trim());
-  return [gem.name, ...semi].map((s) => String(s || '').trim()).filter((s) => s.length >= 3);
+  return [typeof gem.name === 'string' ? gem.name : '', ...semi].map((s) => String(s || '').trim()).filter((s) => s.length >= 3);
 }
 
 async function matchCards(terms, limit = 3) {
   const unique = [...new Set(terms.map((t) => t.toLowerCase()))];
   if (!unique.length) return [];
-  const rx = unique.map((t) => new RegExp(escapeRegex(t).replace(/[\s-]+/g, '[\\s-]*'), 'i'));
+  // Leading boundary: "5 mukhi" must not match "15 Mukhi", "ruby" not "baruby".
+  const rx = unique.map((t) => new RegExp(`(?<![\\da-z])${escapeRegex(t).replace(/[\s-]+/g, '[\\s-]*')}`, 'i'));
   const [products, beads] = await Promise.all([
     Product.find({ isActive: true, name: { $in: rx } }).select('name slug images price').limit(limit).lean(),
     Bead.find({ isActive: { $ne: false }, name: { $in: rx } }).select('name slug image images pricePerBead').limit(limit).lean(),
@@ -561,70 +830,177 @@ async function matchCards(terms, limit = 3) {
   return cards.slice(0, limit);
 }
 
-/** Storefront products / studio beads matching the gemstone and rudraksha suggestions. */
+/** Storefront products / studio beads matching the gemstone and rudraksha suggestions. Never throws. */
 async function productsForSuggestions(kundli) {
-  const gems = kundli?.sections?.gems || {};
-  const out = {};
-  for (const key of ['LIFE', 'BENEFIC', 'LUCKY']) {
-    if (gems[key]) out[key] = await matchCards(gemTerms(gems[key]));
+  try {
+    const gems = kundli?.sections?.gems && typeof kundli.sections.gems === 'object' ? kundli.sections.gems : {};
+    const out = {};
+    for (const key of ['LIFE', 'BENEFIC', 'LUCKY']) {
+      if (gems[key]) out[key] = await matchCards(gemTerms(gems[key]));
+    }
+    const rud = kundli?.sections?.rudraksha;
+    if (rud && typeof rud === 'object') {
+      const key = typeof rud.rudraksha_key === 'string' ? rud.rudraksha_key.replace(/_/g, ' ') : '';
+      out.rudraksha = await matchCards([...rudrakshaTerms(rud.name), ...rudrakshaTerms(key)]);
+    }
+    return out;
+  } catch (err) {
+    console.warn('[kundli] product suggestions failed:', err.message);
+    return {};
   }
-  const rud = kundli?.sections?.rudraksha;
-  if (rud) out.rudraksha = await matchCards([...rudrakshaTerms(rud.name), ...rudrakshaTerms(rud.rudraksha_key?.replace(/_/g, ' '))]);
-  return out;
 }
 
 /* ---------------- views ---------------- */
 
+/** Only https links from AstrologyAPI are stored or shown. */
+function safePdfUrl(url) {
+  return astrology.httpsUrl(url) || '';
+}
+
 /** Customer view: no internal counters or raw error text. */
-function customerView(kundli) {
+function customerView(kundli, now = Date.now()) {
   if (!kundli) return null;
   const k = typeof kundli.toObject === 'function' ? kundli.toObject() : kundli;
   const errorKeys = Object.keys(k.sections?.errors || {});
-  const cooldownUntil = k.runStartedAt ? new Date(new Date(k.runStartedAt).getTime() + CUSTOMER_COOLDOWN_MS) : null;
   const { errors, ...sections } = k.sections || {};
+  const generated = Boolean(k.generatedAt);
+  const after = (d, ms) => (d && new Date(d).getTime() + ms > now ? new Date(new Date(d).getTime() + ms) : null);
+  const gap = after(k.runStartedAt, CUSTOMER_RETRY_GAP_MS);
+  const cooldown = generated ? after(k.generatedAt, CUSTOMER_COOLDOWN_MS) : null;
+  const latest = [gap, cooldown].filter(Boolean).sort((a, b) => b - a)[0] || null;
+  const regensLeft = Math.max(0, regenCap() - (k.customerRegens || 0));
+  const retriesLeft = Math.max(0, retryCap() - (k.customerRetries || 0));
+  const failedFirst = k.status === 'failed' && !generated;
   return {
     _id: k._id,
     status: k.status,
-    birth: k.birth || null,
+    // A ready Kundli shows the details it was calculated from.
+    birth: (k.status === 'ready' && k.generatedBirth) || k.birth || null,
     sections,
     missing: errorKeys,
-    pdfUrl: k.pdfUrl || '',
+    pdfUrl: safePdfUrl(k.pdfUrl),
     generatedAt: k.generatedAt || null,
     eligibleOrderNumber: k.eligibleOrderNumber || '',
     eligibleAt: k.eligibleAt || null,
-    editableAfter: ['ready', 'failed'].includes(k.status) && cooldownUntil && cooldownUntil > new Date() ? cooldownUntil : null,
+    updateFailed: Boolean(k.updateFailedAt) && k.status === 'ready',
+    editableAfter: generated && k.status === 'ready' && regensLeft > 0 ? latest : null,
+    regensLeft: generated ? regensLeft : null,
+    editLocked: generated && regensLeft === 0,
+    retry: failedFirst ? { left: retriesLeft, after: retriesLeft > 0 ? gap : null } : null,
   };
 }
 
-/** GET /api/kundli/mine payload. */
+/**
+ * GET /api/kundli/mine payload. Never creates a record: a customer with a qualifying order but no record
+ * gets `eligible: true` and the details form; the record is created when the details are saved.
+ * For an existing record it re-checks the eligibility, restarts a dead run, and (as a fallback for a
+ * missed order hook) starts generation when the customer is eligible and has details.
+ */
 async function mine(user) {
-  const threshold = await getThreshold();
+  const [threshold, from] = await Promise.all([getThreshold(), getEligibleFrom()]);
+  const base = { threshold: threshold.value, thresholdLabel: threshold.label };
   let kundli = await findForUser(user);
-  kundli = await syncEligibility(kundli, user, threshold);
-  const ready = kundli?.status === 'ready';
+  if (!kundli) {
+    const order = await findQualifyingOrder(user._id, threshold.value, from);
+    return { ...base, kundli: null, eligible: Boolean(order), eligibleOrderNumber: order?.orderNumber || '', suggestions: {} };
+  }
+
+  const now = Date.now();
+  if (RUNNING.includes(kundli.status) && !isRunning(kundli, now)) startGeneration(kundli._id);
+  if (['awaiting_order', 'details_needed'].includes(kundli.status)) {
+    const eligible = await ensureEligible(kundli, { threshold, from });
+    if (eligible && hasBirth(kundli)) {
+      kundli = (await queue(kundli._id, { by: 'system', allow: ['awaiting_order', 'details_needed'] })) || kundli;
+    } else {
+      const next = eligible ? 'details_needed' : 'awaiting_order';
+      if (kundli.status !== next) {
+        kundli = (await Kundli.findOneAndUpdate({ _id: kundli._id, status: kundli.status }, { $set: { status: next } }, { returnDocument: 'after' })) || kundli;
+      }
+    }
+  }
+  const ready = kundli.status === 'ready';
   return {
-    kundli: customerView(kundli),
-    eligible: Boolean(kundli?.eligibleOrderId),
-    threshold: threshold.value,
-    thresholdLabel: threshold.label,
+    ...base,
+    kundli: customerView(kundli, now),
+    eligible: Boolean(kundli.eligibleOrderId) || Boolean(kundli.generatedAt),
+    eligibleOrderNumber: kundli.eligibleOrderNumber || '',
     suggestions: ready ? await productsForSuggestions(kundli) : {},
   };
 }
 
+/* ---------------- admin ---------------- */
+
+/**
+ * Admin/staff birth-details fix. Staff only save the details. An admin saving a record that is waiting for
+ * details (and is eligible) starts generation; a generated Kundli keeps its result until Regenerate.
+ */
+async function adminSaveDetails(id, body, { role } = {}) {
+  const doc = await Kundli.findById(id);
+  if (!doc) throw badRequest('Kundli not found.', 404);
+  if (isRunning(doc)) throw badRequest('This Kundli is being generated. Try again when it finishes.', 409);
+  const birth = cleanBirth(body);
+  if (role === 'admin' && doc.status === 'details_needed' && doc.eligibleOrderId && (await ensureEligible(doc))) {
+    const queued = await queue(doc._id, { by: 'admin', allow: ['details_needed'], set: { birth } });
+    if (queued) return queued;
+  }
+  const saved = await Kundli.findOneAndUpdate({ _id: doc._id, $and: [notRunningFilter(new Date())] }, { $set: { birth } }, { returnDocument: 'after' });
+  if (!saved) throw badRequest('This Kundli is being generated. Try again when it finishes.', 409);
+  return saved;
+}
+
+/** Admin Regenerate / Generate: no eligibility re-check or limits (each run spends credits). */
+async function adminGenerate(id) {
+  const doc = await Kundli.findById(id);
+  if (!doc) throw badRequest('Kundli not found.', 404);
+  if (!hasBirth(doc)) throw badRequest('Add the birth details first.');
+  if (isRunning(doc)) throw badRequest('This Kundli is already being generated.', 409);
+  const queued = await queue(doc._id, { by: 'admin' });
+  if (!queued) throw badRequest('This Kundli is already being generated.', 409);
+  return queued;
+}
+
+/** Rules shown on the admin Kundli page. */
+async function adminRules() {
+  const [threshold, from, today] = await Promise.all([getThreshold(), getEligibleFrom(), KundliPlaceQuota.findById(istDay()).lean()]);
+  return {
+    threshold: threshold.value,
+    thresholdLabel: threshold.label,
+    eligibleFrom: from,
+    eligibleFromEnv: Boolean(envEligibleFrom()),
+    customerRegenCap: regenCap(),
+    customerRetryCap: retryCap(),
+    places: { today: today?.count || 0, cap: placesDailyCap() },
+  };
+}
+
 module.exports = {
+  adminRules,
   getThreshold,
+  parseThreshold,
+  getEligibleFrom,
   qualifyingAmount,
+  orderQualifies,
+  confirmedAt,
   cleanBirth,
   tzOffsetHours,
+  sameBirth,
   saveDetails,
+  retry,
   onOrderConfirmed,
   generate,
   startGeneration,
   queue,
+  sweepStale,
+  startKundliJobs,
+  isRunning,
   hasBirth,
   searchPlaces,
   productsForSuggestions,
+  rudrakshaTerms,
   customerView,
+  safePdfUrl,
   mine,
+  adminSaveDetails,
+  adminGenerate,
   CUSTOMER_COOLDOWN_MS,
 };
