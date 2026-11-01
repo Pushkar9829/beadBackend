@@ -26,11 +26,14 @@ async function getSalePriceMap(now = new Date()) {
 
 function computeSalePrice(basePrice, item) {
   if (!item) return null;
+  // Invalid values (old records saved before the API checked them) are ignored, never priced at ₹0.
   if (item.salePrice != null && Number.isFinite(Number(item.salePrice))) {
-    return Math.max(0, Number(item.salePrice));
+    const price = Number(item.salePrice);
+    return price > 0 ? price : null;
   }
   if (item.percent != null && Number.isFinite(Number(item.percent))) {
-    return Math.max(0, Math.round(basePrice * (1 - Number(item.percent) / 100)));
+    const pct = Number(item.percent);
+    return pct > 0 && pct < 100 ? Math.max(1, Math.round(basePrice * (1 - pct / 100))) : null;
   }
   return null;
 }

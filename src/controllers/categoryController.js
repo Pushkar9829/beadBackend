@@ -1,4 +1,5 @@
 const Category = require('../models/Category');
+const Product = require('../models/Product');
 const mongoose = require('mongoose');
 const { asyncHandler, slugifyName, cleanBody, toStr, UPDATE_OPTS, mergeNestedKeys } = require('../utils/asyncHandler');
 
@@ -86,5 +87,12 @@ exports.adminRemove = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Category not found.' });
   const category = await Category.findByIdAndDelete(req.params.id);
   if (!category) return res.status(404).json({ message: 'Category not found.' });
-  res.json({ ok: true });
+  // Nothing may keep pointing at the deleted category: its products and subcategories move up to its
+  // parent (or become uncategorised / top level).
+  const parentId = category.parentId || null;
+  const [products, children] = await Promise.all([
+    Product.updateMany({ categoryId: category._id }, parentId ? { $set: { categoryId: parentId } } : { $unset: { categoryId: 1 } }),
+    Category.updateMany({ parentId: category._id }, { $set: { parentId } }),
+  ]);
+  res.json({ ok: true, movedProducts: products.modifiedCount, movedSubcategories: children.modifiedCount });
 });

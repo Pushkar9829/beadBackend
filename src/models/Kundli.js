@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 
-const KUNDLI_STATUSES = ['details_needed', 'awaiting_order', 'queued', 'generating', 'ready', 'failed'];
+// on_hold: waiting for the admin run limits (holdReason 'day'/'week'/'month') or for generation to be switched
+// back on ('paused'); the sweep starts held Kundlis oldest first once there is room.
+const KUNDLI_STATUSES = ['details_needed', 'awaiting_order', 'on_hold', 'queued', 'generating', 'ready', 'failed'];
 const KUNDLI_SECTIONS = ['astro', 'planets', 'chartSvg', 'dasha', 'manglik', 'gems', 'rudraksha'];
 
 const birthSchema = new mongoose.Schema(
@@ -47,6 +49,8 @@ const kundliSchema = new mongoose.Schema(
     runStartedAt: Date, // claim time of the current/last run (stale claims can be taken over)
     queuedAt: Date, // when the record last entered 'queued' (a stale queue is picked up by the sweep)
     runBy: { type: String, enum: ['system', 'customer', 'admin'] }, // who asked for the current/last run
+    holdReason: { type: String, enum: ['paused', 'day', 'week', 'month'] },
+    heldAt: Date,
     // Birth details the stored sections were calculated from (the current birth may differ after an edit).
     generatedBirth: { type: birthSchema, default: undefined },
     // A regeneration failed and the previous good Kundli was kept (cleared by the next good run).

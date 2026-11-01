@@ -66,16 +66,17 @@ function isMock() {
   return flag === '1' || flag === 'true';
 }
 
-// Both values are needed: without the user id no Basic header is sent and every call is rejected.
+// Wallet access tokens (pay-as-you-go) need only ASTROLOGY_API_KEY, sent as x-astrologyapi-key. Legacy
+// subscription key pairs also set ASTROLOGY_API_USER_ID, which adds HTTP Basic auth.
 function isConfigured() {
-  const { userId, apiKey } = credentials();
-  return isMock() || Boolean(userId && apiKey);
+  const { apiKey } = credentials();
+  return isMock() || Boolean(apiKey);
 }
 
 function headers(extra = {}) {
   const { userId, apiKey } = credentials();
   const out = { Accept: 'application/json', 'Accept-Language': 'en', ...extra };
-  // Most endpoint docs use Basic auth; some show the x-astrologyapi-key header. Send both.
+  // Basic auth only for a legacy user id + key pair; an access token goes in the header alone.
   if (userId) out.Authorization = `Basic ${Buffer.from(`${userId}:${apiKey}`).toString('base64')}`;
   out['x-astrologyapi-key'] = apiKey;
   return out;
@@ -118,8 +119,8 @@ async function send(url, endpoint, init, ms = timeoutMs()) {
 }
 
 function assertLive() {
-  const { userId, apiKey } = credentials();
-  if (!userId || !apiKey) throw fail('AstrologyAPI is not configured.', 503, 'not_configured', false);
+  const { apiKey } = credentials();
+  if (!apiKey) throw fail('AstrologyAPI is not configured.', 503, 'not_configured', false);
 }
 
 /** POST a JSON endpoint, e.g. call('astro_details', birthBody). */

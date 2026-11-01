@@ -262,11 +262,15 @@ function parseQueryDate(raw, { endOfDay = false } = {}) {
   return date;
 }
 
+// Status groups the admin can filter by (the dashboard "To fulfil" card links to to_fulfil).
+const STATUS_GROUPS = { to_fulfil: ['paid', 'processing', 'packed'] };
+const statusMatch = (status) => (STATUS_GROUPS[status] ? { $in: STATUS_GROUPS[status] } : status);
+
 /** Builds the admin order filter from query params. Returns { filter, status } (status kept separate for statusCounts). */
 function adminOrderFilter(query) {
   const filter = {};
   const status = queryString(query.status, 30);
-  if (status && status !== 'all' && !ORDER_STATUSES.includes(status)) throw badRequest('Unknown order status.');
+  if (status && status !== 'all' && !ORDER_STATUSES.includes(status) && !STATUS_GROUPS[status]) throw badRequest('Unknown order status.');
   const paymentStatus = queryString(query.paymentStatus, 20);
   if (paymentStatus && paymentStatus !== 'all') {
     if (!PAYMENT_STATUSES.includes(paymentStatus)) throw badRequest('Unknown payment status.');
@@ -311,7 +315,7 @@ exports.adminList = asyncHandler(async (req, res) => {
     return res.status(err.status || 400).json({ message: err.message });
   }
   const { filter: baseFilter, status } = parsed;
-  const filter = status ? { ...baseFilter, status } : baseFilter;
+  const filter = status ? { ...baseFilter, status: statusMatch(status) } : baseFilter;
   const { page, limit, skip } = parsePage(req, 25, 100);
   const [orders, total, statusRows] = await Promise.all([
     Order.find(filter).populate('userId', 'name email').sort(orderSort(req.query.sort)).skip(skip).limit(limit).lean(),
@@ -323,6 +327,7 @@ exports.adminList = asyncHandler(async (req, res) => {
   for (const row of statusRows) {
     if (row._id in statusCounts && row._id !== 'all') statusCounts[row._id] = row.n;
     statusCounts.all += row.n;
+    if (STATUS_GROUPS.to_fulfil.includes(row._id)) statusCounts.to_fulfil = (statusCounts.to_fulfil || 0) + row.n;
   }
   res.json({ orders, pagination: pageMeta(total, page, limit), statusCounts });
 });
@@ -340,7 +345,7 @@ exports.adminExport = asyncHandler(async (req, res) => {
   } catch (err) {
     return res.status(err.status || 400).json({ message: err.message });
   }
-  const filter = parsed.status ? { ...parsed.filter, status: parsed.status } : parsed.filter;
+  const filter = parsed.status ? { ...parsed.filter, status: statusMatch(parsed.status) } : parsed.filter;
   const orders = await Order.find(filter).sort(orderSort(req.query.sort)).limit(ADMIN_EXPORT_CAP).lean();
   const csv = toCsv(orders, [
     { label: 'orderNumber', value: (o) => o.orderNumber },

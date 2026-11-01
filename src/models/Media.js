@@ -11,6 +11,8 @@ const mediaSchema = new mongoose.Schema(
     size: Number,
     folder: { type: String, default: 'other', trim: true },
     tags: [String],
+    // Describes the image for screen readers / when it fails to load (used by the admin media library).
+    alt: { type: String, trim: true, maxlength: 300, default: '' },
   },
   { timestamps: true }
 );

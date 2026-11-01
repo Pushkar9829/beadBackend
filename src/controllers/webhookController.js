@@ -37,9 +37,12 @@ function retryResponse(res, provider, err) {
 
 exports.list = asyncHandler(async (req, res) => {
   const urls = webhooks.webhookUrls(req);
+  const host = String(req.get?.('host') || '');
   res.json({
     ok: true,
     webhooks: { cashfree: urls.cashfree, ithink: urls.ithink, ithinkSync: urls.ithinkSync },
+    // Viewed on a local server: the URLs are the public (live) ones, since providers cannot reach localhost.
+    localServer: /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host),
   });
 });
 

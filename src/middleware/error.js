@@ -13,7 +13,9 @@ function errorHandler(err, req, res, _next) {
   } else if (err.code === 11000) {
     status = 409;
     const field = Object.keys(err.keyPattern || err.keyValue || {})[0];
-    message = field ? `That ${field} is already in use.` : 'A record with that value already exists.';
+    // A slug is generated from the name on most forms, so say "name" (the field the admin actually typed).
+    const label = field === 'slug' ? 'name (or its URL slug)' : field;
+    message = field ? `That ${label} is already in use.` : 'A record with that value already exists.';
   } else if (err.name === 'VersionError') {
     status = 409;
     message = 'This record was changed by someone else. Reload and try again.';

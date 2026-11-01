@@ -74,6 +74,8 @@ exports.listPublic = asyncHandler(async (req, res) => {
         pagination: pageMeta(all.length, page, limit),
       });
     }
+    // An unknown or hidden collection lists nothing, never the whole catalog.
+    return res.json({ products: [], collection: null, pagination: pageMeta(0, page, limit) });
   }
   const sort = req.query.featured === 'true' ? { featuredSort: 1, createdAt: -1 } : { createdAt: -1 };
   const [rows, total] = await Promise.all([

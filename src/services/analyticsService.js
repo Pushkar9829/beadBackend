@@ -5,6 +5,9 @@ const Coupon = require('../models/Coupon');
 const Cart = require('../models/Cart');
 const Category = require('../models/Category');
 
+const { REVENUE_MATCH } = require('../lib/revenue');
+
+// Order statuses past payment (kept for callers that rank by sales activity, not money in).
 const PAID = ['paid', 'processing', 'packed', 'shipped', 'delivered'];
 
 const DAY_MS = 86400000;
@@ -66,7 +69,7 @@ function toCsv(rows, columns) {
 }
 
 async function buildReport({ from, to }) {
-  const paidMatch = { status: { $in: PAID }, createdAt: { $gte: from, $lte: to } };
+  const paidMatch = { ...REVENUE_MATCH, createdAt: { $gte: from, $lte: to } };
   const [orders, customers, allCustomers, abandoned, categories] = await Promise.all([
     Order.find(paidMatch).select('total items createdAt').lean(),
     User.countDocuments({ role: 'customer', createdAt: { $gte: from, $lte: to } }),
@@ -107,7 +110,7 @@ async function buildReport({ from, to }) {
     .sort((a, b) => b.revenue - a.revenue);
 
   const spenders = await Order.aggregate([
-    { $match: { userId: { $ne: null }, status: { $in: PAID } } },
+    { $match: { userId: { $ne: null }, ...REVENUE_MATCH } },
     { $group: { _id: '$userId', n: { $sum: 1 } } },
   ]);
   const withOrders = spenders.length;

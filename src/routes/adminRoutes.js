@@ -52,6 +52,7 @@ router.get('/inventory/history', commerce.stockHistory);
 
 // Free Kundli: all staff may view and fix birth data; regenerating (spends AstrologyAPI credits) and deleting are admin-only.
 router.get('/kundli', kundli.adminList);
+router.put('/kundli/settings', requireRole('admin'), kundli.adminSaveSettings);
 router.get('/kundli/:id', kundli.adminGet);
 router.patch('/kundli/:id/details', kundli.adminUpdateDetails);
 router.post('/kundli/:id/generate', requireRole('admin'), kundli.adminGenerate);

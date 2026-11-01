@@ -96,10 +96,16 @@ exports.adminUpdateDetails = asyncHandler(async (req, res) => {
 exports.adminGenerate = asyncHandler(async (req, res) => {
   if (badId(req, res)) return;
   if (!astrology.isConfigured()) {
-    return res.status(503).json({ message: 'AstrologyAPI is not configured. Add ASTROLOGY_API_USER_ID and ASTROLOGY_API_KEY on the server.' });
+    return res.status(503).json({ message: 'AstrologyAPI is not configured. Add ASTROLOGY_API_KEY (the access token) on the server.' });
   }
   const doc = await kundli.adminGenerate(req.params.id);
   res.status(202).json({ kundli: await adminDoc(doc._id) });
+});
+
+// PUT /api/admin/kundli/settings (admin only): on/off, run limits, parts, customer caps, launch date.
+exports.adminSaveSettings = asyncHandler(async (req, res) => {
+  await kundli.saveSettings(req.body, req.user);
+  res.json({ rules: await kundli.adminRules() });
 });
 
 exports.adminRemove = asyncHandler(async (req, res) => {

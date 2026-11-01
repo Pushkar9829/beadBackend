@@ -265,6 +265,7 @@ exports.updateMedia = asyncHandler(async (req, res) => {
         ...(req.body?.folder !== undefined ? { folder: mediaFolder(req.body.folder) } : {}),
         // Tags are only replaced when the body includes them.
         ...(req.body?.tags !== undefined ? { tags: parseTags(req.body.tags) } : {}),
+        ...(req.body?.alt !== undefined ? { alt: String(req.body.alt ?? '').trim().slice(0, 300) } : {}),
       },
     },
     UPDATE_OPTS

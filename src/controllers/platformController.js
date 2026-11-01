@@ -34,6 +34,7 @@ const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { notify, unreadCount } = require('../services/notificationService');
 const { productsForCollection, listPublicCollections, getBySlug } = require('../services/collectionService');
 const { getActiveSales, getSalePriceMap, applySaleToProduct } = require('../services/flashSaleService');
+const { isRevenueOrder } = require('../lib/revenue');
 const { attachProductRating } = require('../lib/productRating');
 const { quote, checkPincode } = require('../services/checkoutService');
 const { buildReport, parseRange, toCsv } = require('../services/analyticsService');
@@ -124,6 +125,25 @@ exports.listFlashSales = asyncHandler(async (_req, res) => {
   });
 });
 
+function flashItemsError(items) {
+  if (!Array.isArray(items) || !items.length) return 'Add at least one product to the sale.';
+  const seen = new Set();
+  for (const item of items) {
+    if (!item || !mongoose.isValidObjectId(item.productId)) return 'Every sale item needs a valid product.';
+    const id = String(item.productId);
+    if (seen.has(id)) return 'Each product can only be in the sale once.';
+    seen.add(id);
+    const hasPrice = item.salePrice !== undefined && item.salePrice !== null && item.salePrice !== '';
+    const hasPercent = item.percent !== undefined && item.percent !== null && item.percent !== '';
+    if (hasPrice === hasPercent) return 'Give each product either a sale price or a discount percentage.';
+    const n = Number(hasPrice ? item.salePrice : item.percent);
+    if (!Number.isFinite(n)) return 'Sale prices and discounts must be numbers.';
+    if (hasPrice && n <= 0) return 'A sale price must be above ₹0.';
+    if (hasPercent && (n <= 0 || n >= 100)) return 'A discount must be between 0 and 100%.';
+  }
+  return null;
+}
+
 exports.saveFlashSale = asyncHandler(async (req, res) => {
   // revenue / unitsSold / discountCost are maintained by order processing, never by the client.
   if (req.params.id && badId(req, res, 'Flash sale not found.')) return;
@@ -141,6 +161,12 @@ exports.saveFlashSale = asyncHandler(async (req, res) => {
   }
   if (endsAt <= startsAt) {
     return res.status(400).json({ message: 'The sale must end after it starts.' });
+  }
+  // Same rules as the admin form: at least one product, each with a sale price above 0 or a discount
+  // between 0 and 100% (anything else would sell the product for ₹0 or be ignored).
+  if (!req.params.id || 'items' in data) {
+    const itemError = flashItemsError(data.items);
+    if (itemError) return res.status(400).json({ message: itemError });
   }
   const sale = req.params.id
     ? await FlashSale.findByIdAndUpdate(req.params.id, { $set: data }, UPDATE_OPTS)
@@ -204,14 +230,20 @@ exports.removeBlog = asyncHandler(async (req, res) => {
   res.json({ ok: true });
 });
 
-exports.listNewsletter = asyncHandler(async (req, res) => {
-  const { page, limit, skip } = parsePage(req);
+// Shared by the list and the CSV export, so "Export CSV" exports what the search shows.
+function newsletterFilter(query) {
   const filter = {};
-  const q = toStr(req.query.q, 100);
+  const q = toStr(query.q, 100);
   if (q) {
     const rx = new RegExp(escapeRegex(q), 'i');
     filter.$or = [{ email: rx }, { name: rx }];
   }
+  return filter;
+}
+
+exports.listNewsletter = asyncHandler(async (req, res) => {
+  const { page, limit, skip } = parsePage(req);
+  const filter = newsletterFilter(req.query);
   const [subscribers, total] = await Promise.all([
     Newsletter.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
     Newsletter.countDocuments(filter),
@@ -226,8 +258,8 @@ exports.removeNewsletter = asyncHandler(async (req, res) => {
   res.json({ ok: true });
 });
 
-exports.exportNewsletter = asyncHandler(async (_req, res) => {
-  const rows = await Newsletter.find().sort({ createdAt: -1 }).limit(EXPORT_ROW_CAP).lean();
+exports.exportNewsletter = asyncHandler(async (req, res) => {
+  const rows = await Newsletter.find(newsletterFilter(req.query)).sort({ createdAt: -1 }).limit(EXPORT_ROW_CAP).lean();
   const csv = toCsv(rows, [
     { label: 'email', value: (r) => r.email },
     { label: 'name', value: (r) => r.name || '' },
@@ -515,6 +547,7 @@ exports.updateReturn = asyncHandler(async (req, res) => {
   }
   await doc.save();
 
+  let pickupError = null;
   if (order && becameApproved && !doc.shipment?.waybill) {
     try {
       const ithink = require('../services/ithinkService');
@@ -541,7 +574,8 @@ exports.updateReturn = asyncHandler(async (req, res) => {
       });
       await order.save();
     } catch (err) {
-      doc.timeline.push({ status: 'approved', note: `iThink reverse pickup failed: ${err.message}`, at: new Date() });
+      pickupError = err.message || 'iThink did not accept the pickup.';
+      doc.timeline.push({ status: 'approved', note: `iThink reverse pickup failed: ${pickupError}`, at: new Date() });
       await doc.save();
     }
   }
@@ -614,7 +648,8 @@ exports.updateReturn = asyncHandler(async (req, res) => {
     setIfPath(doc, 'restockedAt', new Date());
     await doc.save();
   }
-  res.json({ return: doc, order });
+  // pickupError: approved, but the automatic courier pickup failed (shown to the admin, retry via Book pickup).
+  res.json({ return: doc, order, ...(pickupError ? { pickupError } : {}) });
 });
 
 exports.analytics = asyncHandler(async (req, res) => {
@@ -674,10 +709,8 @@ exports.customerProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id).populate('groupIds', 'name slug color').select('-passwordHash -tokenVersion').lean();
   if (!user) return res.status(404).json({ message: 'Customer not found.' });
   const orders = await Order.find({ userId: user._id }).sort({ createdAt: -1 }).limit(500).lean();
-  // Same rule as the customers list: only paid / fulfilled orders count towards spend.
-  const counted = orders.filter(
-    (o) => o.payment?.status === 'paid' || ['processing', 'packed', 'shipped', 'delivered'].includes(o.status)
-  ).filter((o) => o.status !== 'cancelled' && o.payment?.status !== 'refunded');
+  // Same rule as the customers list and the dashboard (lib/revenue.js): paid, or COD delivered.
+  const counted = orders.filter(isRevenueOrder);
   const spent = counted.reduce((s, o) => s + (o.total || 0), 0);
   const aov = counted.length ? Math.round(spent / counted.length) : 0;
   const productMap = new Map();
@@ -719,13 +752,13 @@ exports.assignGroups = asyncHandler(async (req, res) => {
 });
 
 exports.remindAbandoned = asyncHandler(async (req, res) => {
-  const cart = await Cart.findById(req.params.id).populate('userId', 'name email');
+  // timestamps: false keeps updatedAt (the customer's last activity, which the abandoned list is based on);
+  // a plain save() bumped it and made the cart drop off the list.
+  const cart = await Cart.findByIdAndUpdate(req.params.id, { $set: { remindedAt: new Date() } }, { new: true, timestamps: false }).populate('userId', 'name email');
   if (!cart) return res.status(404).json({ message: 'Cart not found.' });
-  cart.remindedAt = new Date();
-  await cart.save();
   await notify({
     type: 'abandoned_cart',
-    title: 'Abandoned cart reminder queued',
+    title: 'Abandoned cart marked as followed up',
     body: cart.userId ? `${cart.userId.name} (${cart.userId.email})` : 'Unknown customer',
     link: '/admin/abandoned-carts',
     meta: { cartId: cart._id, email: cart.userId?.email },

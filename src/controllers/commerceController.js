@@ -24,6 +24,7 @@ const {
 } = require('../utils/asyncHandler');
 const { parsePage, pageMeta, parseSort } = require('../utils/pagination');
 const { parseRange, toCsv } = require('../services/analyticsService');
+const { REVENUE_MATCH } = require('../lib/revenue');
 
 function notFoundIfBadId(req, res, label) {
   if (mongoose.isValidObjectId(req.params.id)) return false;
@@ -59,12 +60,14 @@ function effectiveValues(existing, data, $unset) {
   return out;
 }
 
-const PAID = ['paid', 'processing', 'packed', 'shipped', 'delivered'];
-
 function startOfDay(d = new Date()) {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
+}
+
+function localDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function daysBetween(from, to) {
@@ -82,7 +85,8 @@ exports.dashboard = asyncHandler(async (req, res) => {
   // Validates from/to (400 on invalid) and clamps custom ranges to 366 days.
   const { from, to, range } = parseRange(req.query);
   const today = startOfDay();
-  const paidMatch = { status: { $in: PAID } };
+  // Revenue = money in: paid online/UPI, or COD delivered (lib/revenue.js), not just "in fulfilment".
+  const paidMatch = REVENUE_MATCH;
 
   const [
     salesTodayAgg,
@@ -152,12 +156,14 @@ exports.dashboard = asyncHandler(async (req, res) => {
   const rangePaidCount = rangeSalesAgg[0]?.count || 0;
   const aov = rangePaidCount ? Math.round(rangeSales / rangePaidCount) : 0;
 
+  // Day buckets in the server's local calendar, the same one "today" uses (an ISO/UTC key put local
+  // midnight on the previous day and dropped today's orders on servers ahead of UTC, e.g. IST).
   const byDay = new Map();
   for (const d of daysBetween(from, to)) {
-    byDay.set(d.toISOString().slice(0, 10), { date: d.toISOString().slice(0, 10), sales: 0, orders: 0 });
+    byDay.set(localDayKey(d), { date: localDayKey(d), sales: 0, orders: 0 });
   }
   for (const o of paidInRange) {
-    const key = new Date(o.createdAt).toISOString().slice(0, 10);
+    const key = localDayKey(new Date(o.createdAt));
     const row = byDay.get(key);
     if (!row) continue;
     row.sales += o.total || 0;
@@ -210,11 +216,9 @@ exports.dashboard = asyncHandler(async (req, res) => {
 
 const DAY_MS = 86400000;
 
-// Orders that count toward spent / aov / orderCount: paid, or in fulfilment. Never cancelled or unpaid-pending.
-const COUNTED_ORDER_MATCH = {
-  status: { $nin: ['cancelled', 'pending_payment'] },
-  $or: [{ 'payment.status': 'paid' }, { status: { $in: ['processing', 'packed', 'shipped', 'delivered'] } }],
-};
+// Orders that count toward spent / aov / orderCount: the shared revenue rule (paid, or COD delivered),
+// the same one the customer profile and the dashboard use.
+const COUNTED_ORDER_MATCH = REVENUE_MATCH;
 const CUSTOMER_EXPORT_CAP = 10000;
 
 function customerSegment(u, s, now) {
@@ -425,14 +429,18 @@ function couponError(c) {
   const minOrder = numOrNull(c.minOrder);
   const usageLimit = numOrNull(c.usageLimit);
   const maxDiscount = numOrNull(c.maxDiscount);
-  if (Number.isNaN(value) || Number.isNaN(minOrder) || Number.isNaN(usageLimit) || Number.isNaN(maxDiscount)) {
+  const perCustomerLimit = numOrNull(c.perCustomerLimit);
+  if ([value, minOrder, usageLimit, maxDiscount, perCustomerLimit].some(Number.isNaN)) {
     return 'Coupon amounts must be numbers.';
   }
-  if (value != null && value < 0) return 'Coupon value cannot be negative.';
+  // Same rules as the admin form, so a direct API call cannot save a coupon that does nothing.
+  if (c.code !== undefined && !/^\S{1,40}$/.test(String(c.code || ''))) return 'Coupon codes need 1-40 characters and no spaces.';
+  if (value == null || value <= 0) return 'Coupon value must be above 0.';
   if (c.type === 'percent' && value != null && value > 100) return 'A percent coupon cannot exceed 100%.';
   if (minOrder != null && minOrder < 0) return 'Minimum order cannot be negative.';
   if (usageLimit != null && usageLimit < 1) return 'Usage limit must be at least 1 when set.';
   if (maxDiscount != null && maxDiscount < 0) return 'Maximum discount cannot be negative.';
+  if (perCustomerLimit != null && perCustomerLimit < 1) return 'Uses per customer must be at least 1 when set.';
   return windowError(c);
 }
 
@@ -486,6 +494,10 @@ function offerError(o) {
   if (o.type === 'bogo' && !(nums.buyQty >= 1 && nums.getQty >= 1)) {
     return 'Buy X get Y offers need a buy quantity and a get quantity of at least 1.';
   }
+  // An offer that discounts nothing is a mistake, not an offer.
+  if (o.type === 'percent' && !(nums.percent > 0)) return 'A percent offer needs a percentage above 0.';
+  if (o.type === 'fixed' && !(nums.amountOff > 0)) return 'An amount-off offer needs an amount above 0.';
+  if (o.type === 'bundle' && !(nums.percent > 0) && !(nums.amountOff > 0)) return 'A bundle offer needs a percent or an amount off above 0.';
   return windowError(o);
 }
 
@@ -579,8 +591,9 @@ exports.adjustStock = asyncHandler(async (req, res) => {
     kind,
     productId: kind === 'product' ? id : undefined,
     beadId: kind === 'bead' ? id : undefined,
-    delta: amount,
-    reason: reasonText,
+    // The change actually applied (removing more than is in stock stops at 0); the reason keeps the request.
+    delta: nextStock - previousStock,
+    reason: nextStock - previousStock !== amount ? `${reasonText} (asked for ${amount > 0 ? '+' : ''}${amount}, stock stopped at 0)` : reasonText,
     previousStock,
     nextStock,
     userId: req.user?._id,

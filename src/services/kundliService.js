@@ -11,6 +11,7 @@
 const mongoose = require('mongoose');
 const Kundli = require('../models/Kundli');
 const KundliSetting = require('../models/KundliSetting');
+const KundliUsage = require('../models/KundliUsage');
 const { KundliPlaceCache, KundliPlaceQuota } = require('../models/KundliPlace');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -46,8 +47,7 @@ function envInt(name, fallback, min = 0) {
   const n = Number.parseInt(process.env[name], 10);
   return Number.isInteger(n) && n >= min ? n : fallback;
 }
-const regenCap = () => envInt('KUNDLI_CUSTOMER_REGEN_CAP', 3);
-const retryCap = () => envInt('KUNDLI_CUSTOMER_RETRY_CAP', 3);
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
 function badRequest(message, status = 400, code) {
   const err = new Error(message);
@@ -99,9 +99,164 @@ async function getThreshold() {
   return { value, label: ok ? label : `₹${value.toLocaleString('en-IN')}` };
 }
 
-/* ---------------- launch cutoff ---------------- */
+/* ---------------- admin settings ---------------- */
 
-let eligibleFromCache = null;
+// Every part is one AstrologyAPI call: the data sections, then the downloadable PDF.
+const PART_KEYS = [...Kundli.KUNDLI_SECTIONS, 'pdf'];
+const PERIODS = ['day', 'week', 'month'];
+// Admin changes reach other instances within this time (the saving instance reloads at once).
+const SETTINGS_TTL_MS = 30 * 1000;
+let settingsCache = null; // { doc, at }
+
+/** The settings document (created with the launch date on first use), cached briefly. */
+async function loadSettings({ fresh = false } = {}) {
+  if (!fresh && settingsCache && Date.now() - settingsCache.at < SETTINGS_TTL_MS) return settingsCache.doc;
+  let doc;
+  try {
+    doc = await KundliSetting.findOneAndUpdate(
+      { key: 'main' },
+      { $setOnInsert: { key: 'main', eligibleFrom: new Date() } },
+      { upsert: true, returnDocument: 'after' }
+    ).lean();
+  } catch (err) {
+    if (err.code !== 11000) throw err;
+    doc = await KundliSetting.findOne({ key: 'main' }).lean(); // created concurrently
+  }
+  settingsCache = { doc, at: Date.now() };
+  return doc;
+}
+
+const capOr = (value, envName, fallback) => (Number.isInteger(value) && value >= 0 ? value : envInt(envName, fallback));
+
+/** Settings in effect, from the last load (defaults before the first one). Unset caps use the env/defaults. */
+function activeSettings() {
+  const doc = settingsCache?.doc || {};
+  const parts = Object.fromEntries(PART_KEYS.map((k) => [k, doc.sections?.[k] !== false]));
+  const limits = Object.fromEntries(PERIODS.map((p) => [p, Number.isInteger(doc.limits?.[p]) && doc.limits[p] > 0 ? doc.limits[p] : null]));
+  return {
+    enabled: doc.enabled !== false,
+    limits,
+    parts,
+    callsPerKundli: PART_KEYS.filter((k) => parts[k]).length,
+    regenCap: capOr(doc.customerRegenCap, 'KUNDLI_CUSTOMER_REGEN_CAP', 3),
+    retryCap: capOr(doc.customerRetryCap, 'KUNDLI_CUSTOMER_RETRY_CAP', 3),
+    placesCap: capOr(doc.placesDailyCap, 'KUNDLI_PLACES_DAILY_CAP', 500),
+  };
+}
+const regenCap = () => activeSettings().regenCap;
+const retryCap = () => activeSettings().retryCap;
+
+const PERIOD_LABEL = { day: 'daily', week: 'weekly', month: 'monthly' };
+
+function intOrNull(value, label, min, max) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) throw badRequest(`${label} must be a whole number from ${min} to ${max}, or empty.`);
+  return n;
+}
+
+/**
+ * Admin -> Kundli -> Settings (admin only). Partial updates: only the fields sent change. Empty limits and
+ * caps mean "no limit" / "use the default". Held Kundlis are started right away if there is room now.
+ */
+async function saveSettings(body, user) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw badRequest('Settings are required.');
+  const doc = await loadSettings({ fresh: true });
+  const $set = {};
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== 'boolean') throw badRequest('enabled must be true or false.');
+    $set.enabled = body.enabled;
+  }
+  if (body.limits && typeof body.limits === 'object') {
+    for (const p of PERIODS) {
+      if (p in body.limits) $set[`limits.${p}`] = intOrNull(body.limits[p], `The ${PERIOD_LABEL[p]} limit`, 1, 100000);
+    }
+  }
+  if (body.parts && typeof body.parts === 'object') {
+    const parts = { ...activeSettings().parts };
+    for (const k of PART_KEYS) if (k in body.parts) parts[k] = body.parts[k] !== false;
+    if (!Kundli.KUNDLI_SECTIONS.some((k) => parts[k])) throw badRequest('Keep at least one Kundli part (besides the PDF) switched on.');
+    $set.sections = parts;
+  }
+  if ('customerRegenCap' in body) $set.customerRegenCap = intOrNull(body.customerRegenCap, 'Customer updates', 0, 50);
+  if ('customerRetryCap' in body) $set.customerRetryCap = intOrNull(body.customerRetryCap, 'Customer retries', 0, 50);
+  if ('placesDailyCap' in body) $set.placesDailyCap = intOrNull(body.placesDailyCap, 'Place searches per day', 0, 100000);
+  if ('eligibleFrom' in body) {
+    const raw = toStr(body.eligibleFrom, 40);
+    const d = DATE_RX.test(raw) ? new Date(`${raw}T00:00:00+05:30`) : new Date(raw);
+    if (!raw || Number.isNaN(d.getTime())) throw badRequest('Please enter a valid launch date.');
+    $set.eligibleFrom = d;
+  }
+  if (!Object.keys($set).length) throw badRequest('Nothing to save.');
+  if (user?._id) $set.updatedBy = user._id;
+  await KundliSetting.updateOne({ _id: doc._id }, { $set });
+  await loadSettings({ fresh: true });
+  releaseHolds().catch((err) => console.warn('[kundli] releasing held Kundlis:', err.message));
+}
+
+/* ---------------- usage & run limits ---------------- */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const USAGE_KEEP_MS = { day: 400 * DAY_MS, week: 400 * DAY_MS, month: 800 * DAY_MS };
+
+/** Usage ids of the IST day, week (Monday to Sunday) and month containing `date`. */
+function periodKeys(date = new Date()) {
+  const ist = new Date(date.getTime() + IST_OFFSET_MS);
+  const day = ist.toISOString().slice(0, 10);
+  const monday = new Date(ist.getTime() - ((ist.getUTCDay() + 6) % 7) * DAY_MS);
+  return { day: `d:${day}`, week: `w:${monday.toISOString().slice(0, 10)}`, month: `m:${day.slice(0, 7)}` };
+}
+
+/** +1 run in one period, only while it is under `limit` (null = no limit). */
+async function bumpRuns(id, limit, keepMs) {
+  const match = { _id: id, ...(limit ? { runs: { $lt: limit } } : {}) };
+  const inc = { $inc: { runs: 1 } };
+  try {
+    const doc = await KundliUsage.findOneAndUpdate(
+      match,
+      { ...inc, $setOnInsert: { calls: 0, expiresAt: new Date(Date.now() + keepMs) } },
+      { upsert: true, returnDocument: 'after' }
+    );
+    return Boolean(doc);
+  } catch (err) {
+    if (err.code !== 11000) throw err;
+    // The period exists (created concurrently, or full): count only if it is still under the limit.
+    return Boolean(await KundliUsage.findOneAndUpdate(match, inc));
+  }
+}
+
+async function releaseRun(keys) {
+  if (keys?.length) await KundliUsage.updateMany({ _id: { $in: keys } }, { $inc: { runs: -1 } });
+}
+
+/**
+ * Reserves one run in today's, this week's and this month's usage. With `enforce`, stops at the first
+ * full period (undoing the reservations made so far) and returns it; admin runs are counted, not limited.
+ */
+async function reserveRun({ enforce = true } = {}) {
+  const { limits } = activeSettings();
+  const keys = periodKeys();
+  const done = [];
+  for (const p of PERIODS) {
+    if (!(await bumpRuns(keys[p], enforce ? limits[p] : null, USAGE_KEEP_MS[p]))) {
+      await releaseRun(done);
+      return { ok: false, period: p };
+    }
+    done.push(keys[p]);
+  }
+  return { ok: true, keys: done };
+}
+
+/** Runs and API calls in the current day / week / month, with the limits. */
+async function usageNow() {
+  const keys = periodKeys();
+  const docs = await KundliUsage.find({ _id: { $in: Object.values(keys) } }).lean();
+  const byId = Object.fromEntries(docs.map((d) => [d._id, d]));
+  const { limits } = activeSettings();
+  return Object.fromEntries(PERIODS.map((p) => [p, { runs: byId[keys[p]]?.runs || 0, calls: byId[keys[p]]?.calls || 0, limit: limits[p] }]));
+}
+
+/* ---------------- launch cutoff ---------------- */
 
 /** KUNDLI_ELIGIBLE_FROM as a Date: 'YYYY-MM-DD' is midnight IST; any other ISO string is used as is. */
 function envEligibleFrom() {
@@ -117,26 +272,13 @@ function envEligibleFrom() {
 
 /**
  * Orders confirmed (paid or delivered) before this date never unlock a Kundli.
- * KUNDLI_ELIGIBLE_FROM wins; otherwise the date the Kundli settings document was first created (the first
- * start of this version), stored in Mongo so it never moves on a restart or a second instance.
+ * KUNDLI_ELIGIBLE_FROM wins; otherwise the stored launch date: the first start of this version, or the date
+ * an admin set in Kundli settings. Stored in Mongo so it never moves on a restart or a second instance.
  */
 async function getEligibleFrom() {
   const fromEnv = envEligibleFrom();
   if (fromEnv) return fromEnv;
-  if (eligibleFromCache) return eligibleFromCache;
-  let doc;
-  try {
-    doc = await KundliSetting.findOneAndUpdate(
-      { key: 'main' },
-      { $setOnInsert: { key: 'main', eligibleFrom: new Date() } },
-      { upsert: true, returnDocument: 'after' }
-    ).lean();
-  } catch (err) {
-    if (err.code !== 11000) throw err;
-    doc = await KundliSetting.findOne({ key: 'main' }).lean(); // created concurrently
-  }
-  eligibleFromCache = doc.eligibleFrom;
-  return eligibleFromCache;
+  return (await loadSettings()).eligibleFrom;
 }
 
 /* ---------------- qualifying orders ---------------- */
@@ -410,12 +552,36 @@ async function sweepStale() {
   return stale.length;
 }
 
+let releasing = false;
+/** Starts held Kundlis one at a time, oldest first, while generation is on and the limits leave room. */
+async function releaseHolds() {
+  if (releasing) return 0;
+  releasing = true;
+  try {
+    await loadSettings();
+    if (!activeSettings().enabled) return 0;
+    const held = await Kundli.find({ status: 'on_hold' }).sort({ heldAt: 1, _id: 1 }).select('_id').limit(25).lean();
+    let started = 0;
+    for (const { _id } of held) {
+      const res = await generate(_id);
+      if (res?.status === 'on_hold') break; // a limit is full again
+      started += 1;
+    }
+    return started;
+  } finally {
+    releasing = false;
+  }
+}
+
 let sweepTimer = null;
-/** Called once after the DB connects: fixes the launch cutoff and starts the stale-run sweep. */
+/** Called once after the DB connects: fixes the launch cutoff and starts the stale-run and held-run sweep. */
 async function startKundliJobs() {
   const from = await getEligibleFrom();
   console.log(`[kundli] orders confirmed from ${from.toISOString()} unlock the free Kundli${envEligibleFrom() ? ' (KUNDLI_ELIGIBLE_FROM)' : ''}.`);
-  const run = () => sweepStale().catch((err) => console.warn('[kundli] sweep:', err.message));
+  const run = () => {
+    sweepStale().catch((err) => console.warn('[kundli] sweep:', err.message));
+    releaseHolds().catch((err) => console.warn('[kundli] held Kundlis:', err.message));
+  };
   if (!sweepTimer) {
     sweepTimer = setInterval(run, SWEEP_MS);
     sweepTimer.unref();
@@ -435,11 +601,15 @@ async function startKundliJobs() {
 async function saveDetails({ user, details }) {
   if (!user?._id) throw badRequest('Please sign in to save your birth details.', 401);
   const birth = cleanBirth(details);
+  await loadSettings();
   const now = Date.now();
   const kundli = await findOrCreateForUser(user, { status: 'awaiting_order' });
   if (isRunning(kundli, now)) throw badRequest('Your Kundli is being prepared. Please try again in a minute.', 409);
 
   const generated = Boolean(kundli.generatedAt);
+  if (generated && kundli.status === 'on_hold') {
+    throw badRequest('Your updated Kundli is already in the queue. You can change the details again once it is ready.', 409);
+  }
   const failedFirst = kundli.status === 'failed' && !generated;
   const shown = kundli.generatedBirth || kundli.birth;
   if (generated && kundli.status === 'ready' && sameBirth(shown, birth)) return { kundli, status: kundli.status };
@@ -481,13 +651,14 @@ async function saveDetails({ user, details }) {
   // Not generated yet (awaiting order / details needed).
   Object.assign(kundli, set);
   if (await ensureEligible(kundli)) {
-    const queued = await queue(kundli._id, { by: 'customer', allow: ['awaiting_order', 'details_needed'], set });
+    // A held Kundli keeps its place in the queue (heldAt) when the details are corrected.
+    const queued = await queue(kundli._id, { by: 'customer', allow: ['awaiting_order', 'details_needed', 'on_hold'], set });
     if (queued) return { kundli: queued, status: queued.status };
     throw badRequest('Your Kundli is being prepared. Please try again in a minute.', 409);
   }
   const saved = await Kundli.findOneAndUpdate(
-    { _id: kundli._id, status: { $in: ['awaiting_order', 'details_needed'] } },
-    { $set: { ...set, status: 'awaiting_order' } },
+    { _id: kundli._id, status: { $in: ['awaiting_order', 'details_needed', 'on_hold'] } },
+    { $set: { ...set, status: 'awaiting_order' }, $unset: { holdReason: 1, heldAt: 1 } },
     { returnDocument: 'after' }
   );
   if (!saved) throw badRequest('Your Kundli is being prepared. Please try again in a minute.', 409);
@@ -578,18 +749,29 @@ function hasSections(kundli) {
   return Kundli.KUNDLI_SECTIONS.some((k) => s[k] !== undefined && s[k] !== null);
 }
 
+/** Parks a Kundli 'on_hold' (generation off, or a run limit full). It keeps its first heldAt (its place in line). */
+async function hold(kundli, reason) {
+  const match = { _id: kundli._id, status: kundli.status };
+  if (kundli.status === 'queued') match.queuedAt = kundli.queuedAt;
+  const $set = { status: 'on_hold', holdReason: reason };
+  if (!kundli.heldAt) $set.heldAt = new Date();
+  await Kundli.updateOne(match, { $set });
+  return Kundli.findById(kundli._id);
+}
+
 /**
- * Runs a queued Kundli: calls the 8 Standard endpoints and stores the result. Partial results are kept:
- * 'ready' when at least one data section succeeded (a PDF failure alone never fails it), 'failed' when
- * every data section failed. A failed regeneration keeps the previous good Kundli. Only a 'queued' (or a
- * stale 'generating') record can be claimed, atomically, so a Kundli never runs twice at once.
+ * Runs a queued (or held) Kundli: calls the Standard endpoints switched on in the settings and stores the
+ * result. Partial results are kept: 'ready' when at least one data section succeeded (a PDF failure alone
+ * never fails it), 'failed' when every data section failed. A failed regeneration keeps the previous good
+ * Kundli. Only a 'queued', 'on_hold' (or a stale 'generating') record can be claimed, atomically, so a
+ * Kundli never runs twice at once.
  */
 async function generate(kundliId) {
   if (!mongoose.isValidObjectId(kundliId)) throw badRequest('Kundli not found.', 404);
   const now = new Date();
   const current = await Kundli.findById(kundliId);
   if (!current) return null;
-  const claimable = current.status === 'queued' || (current.status === 'generating' && !isRunning(current, now));
+  const claimable = ['queued', 'on_hold'].includes(current.status) || (current.status === 'generating' && !isRunning(current, now));
   if (!claimable || !hasBirth(current)) return current;
 
   const hadGood = Boolean(current.generatedAt) && hasSections(current);
@@ -602,12 +784,24 @@ async function generate(kundliId) {
     return Kundli.findById(current._id);
   }
 
+  // Admin limits: customer/system runs wait 'on_hold' while generation is off or a period is full.
+  // Admin runs are the admin's call: counted in the usage, never held.
+  await loadSettings();
+  const cfg = activeSettings();
+  const byAdmin = current.runBy === 'admin';
+  if (!byAdmin && !cfg.enabled) return hold(current, 'paused');
+  const reserved = await reserveRun({ enforce: !byAdmin });
+  if (!reserved.ok) return hold(current, reserved.period);
+
   const kundli = await Kundli.findOneAndUpdate(
-    { _id: current._id, 'birth.dob': { $exists: true }, $or: [{ status: 'queued' }, staleRunFilter(now)[1]] },
-    { $set: { status: 'generating', runStartedAt: now }, $inc: { attempts: 1 } },
+    { _id: current._id, 'birth.dob': { $exists: true }, $or: [{ status: 'queued' }, { status: 'on_hold' }, staleRunFilter(now)[1]] },
+    { $set: { status: 'generating', runStartedAt: now }, $unset: { holdReason: 1, heldAt: 1 }, $inc: { attempts: 1 } },
     { returnDocument: 'after' }
   );
-  if (!kundli) return Kundli.findById(current._id); // claimed by another run
+  if (!kundli) {
+    await releaseRun(reserved.keys); // claimed by another run
+    return Kundli.findById(current._id);
+  }
 
   const body = birthBody(kundli.birth);
   const sections = {};
@@ -632,25 +826,27 @@ async function generate(kundliId) {
     }
   };
 
+  const parts = {
+    astro: () => astrology.call('astro_details', body),
+    planets: () => astrology.call('planets', body),
+    chartSvg: async () => svgFrom(await astrology.call('horo_chart_image/D1', { ...body, chartType: 'north', image_type: 'svg' })),
+    dasha: () => astrology.call('current_vdasha', body),
+    manglik: () => astrology.call('manglik', body),
+    gems: () => astrology.call('basic_gem_suggestion', body),
+    rudraksha: () => astrology.call('rudraksha_suggestion', body),
+    pdf: async () => {
+      pdfUrl = await astrology.horoscopePdf(await pdfFields(kundli.birth, body));
+      return undefined;
+    },
+  };
+  // Only the parts switched on in the admin settings are requested.
   await pool(
-    [
-      step('astro', () => astrology.call('astro_details', body)),
-      step('planets', () => astrology.call('planets', body)),
-      step('chartSvg', async () => svgFrom(await astrology.call('horo_chart_image/D1', { ...body, chartType: 'north', image_type: 'svg' }))),
-      step('dasha', () => astrology.call('current_vdasha', body)),
-      step('manglik', () => astrology.call('manglik', body)),
-      step('gems', () => astrology.call('basic_gem_suggestion', body)),
-      step('rudraksha', () => astrology.call('rudraksha_suggestion', body)),
-      step('pdf', async () => {
-        pdfUrl = await astrology.horoscopePdf(await pdfFields(kundli.birth, body));
-        return undefined;
-      }),
-    ],
+    PART_KEYS.filter((k) => cfg.parts[k]).map((k) => step(k, parts[k])),
     CONCURRENCY
   );
 
   delete sections.pdf;
-  const dataKeys = Kundli.KUNDLI_SECTIONS;
+  const dataKeys = Kundli.KUNDLI_SECTIONS.filter((k) => cfg.parts[k]);
   const failedKeys = Object.keys(errors);
   const okData = dataKeys.filter((k) => sections[k] !== undefined && !errors[k]);
   const status = okData.length ? 'ready' : 'failed';
@@ -692,6 +888,9 @@ async function generate(kundliId) {
     { returnDocument: 'after' }
   );
   if (!saved) await Kundli.updateOne({ _id: kundli._id }, { $inc: { apiCalls: calls } });
+  if (calls) {
+    await KundliUsage.updateMany({ _id: { $in: reserved.keys } }, { $inc: { calls } }).catch((err) => console.warn('[kundli] usage:', err.message));
+  }
 
   if (failedKeys.length) {
     const who = kundli.birth?.name || kundli.email || String(kundli._id);
@@ -716,10 +915,10 @@ async function generate(kundliId) {
 /* ---------------- place search ---------------- */
 
 const PLACE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const placesDailyCap = () => envInt('KUNDLI_PLACES_DAILY_CAP', 500);
+const placesDailyCap = () => activeSettings().placesCap;
 
 function istDay(date = new Date()) {
-  return new Date(date.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  return new Date(date.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
 function countryName(code) {
@@ -732,6 +931,7 @@ function countryName(code) {
 
 /** Reserves one uncached geo_details lookup in today's (IST) global budget. False once the cap is reached. */
 async function reservePlaceLookup() {
+  await loadSettings();
   const cap = placesDailyCap();
   if (cap <= 0) return false;
   const day = istDay();
@@ -871,11 +1071,14 @@ function customerView(kundli, now = Date.now()) {
   const regensLeft = Math.max(0, regenCap() - (k.customerRegens || 0));
   const retriesLeft = Math.max(0, retryCap() - (k.customerRetries || 0));
   const failedFirst = k.status === 'failed' && !generated;
+  // A held update of a generated Kundli: the customer keeps seeing the current Kundli meanwhile.
+  const updatePending = k.status === 'on_hold' && generated;
   return {
     _id: k._id,
-    status: k.status,
+    status: updatePending ? 'ready' : k.status,
     // A ready Kundli shows the details it was calculated from.
-    birth: (k.status === 'ready' && k.generatedBirth) || k.birth || null,
+    birth: ((k.status === 'ready' || updatePending) && k.generatedBirth) || k.birth || null,
+    updatePending,
     sections,
     missing: errorKeys,
     pdfUrl: safePdfUrl(k.pdfUrl),
@@ -918,10 +1121,11 @@ async function mine(user) {
       }
     }
   }
-  const ready = kundli.status === 'ready';
+  const view = customerView(kundli, now);
+  const ready = view.status === 'ready';
   return {
     ...base,
-    kundli: customerView(kundli, now),
+    kundli: view,
     eligible: Boolean(kundli.eligibleOrderId) || Boolean(kundli.generatedAt),
     eligibleOrderNumber: kundli.eligibleOrderNumber || '',
     suggestions: ready ? await productsForSuggestions(kundli) : {},
@@ -961,20 +1165,50 @@ async function adminGenerate(id) {
 
 /** Rules shown on the admin Kundli page. */
 async function adminRules() {
-  const [threshold, from, today] = await Promise.all([getThreshold(), getEligibleFrom(), KundliPlaceQuota.findById(istDay()).lean()]);
+  const doc = await loadSettings();
+  const [threshold, from, today, usage, held] = await Promise.all([
+    getThreshold(),
+    getEligibleFrom(),
+    KundliPlaceQuota.findById(istDay()).lean(),
+    usageNow(),
+    Kundli.countDocuments({ status: 'on_hold' }),
+  ]);
+  const cfg = activeSettings();
   return {
     threshold: threshold.value,
     thresholdLabel: threshold.label,
     eligibleFrom: from,
     eligibleFromEnv: Boolean(envEligibleFrom()),
-    customerRegenCap: regenCap(),
-    customerRetryCap: retryCap(),
-    places: { today: today?.count || 0, cap: placesDailyCap() },
+    customerRegenCap: cfg.regenCap,
+    customerRetryCap: cfg.retryCap,
+    places: { today: today?.count || 0, cap: cfg.placesCap },
+    // Admin -> Kundli -> Settings: stored values (null = default / no limit) and what is in effect.
+    settings: {
+      enabled: cfg.enabled,
+      limits: cfg.limits,
+      parts: cfg.parts,
+      callsPerKundli: cfg.callsPerKundli,
+      customerRegenCap: Number.isInteger(doc.customerRegenCap) ? doc.customerRegenCap : null,
+      customerRetryCap: Number.isInteger(doc.customerRetryCap) ? doc.customerRetryCap : null,
+      placesDailyCap: Number.isInteger(doc.placesDailyCap) ? doc.placesDailyCap : null,
+      storedEligibleFrom: doc.eligibleFrom,
+      defaults: {
+        customerRegenCap: envInt('KUNDLI_CUSTOMER_REGEN_CAP', 3),
+        customerRetryCap: envInt('KUNDLI_CUSTOMER_RETRY_CAP', 3),
+        placesDailyCap: envInt('KUNDLI_PLACES_DAILY_CAP', 500),
+      },
+      updatedAt: doc.updatedAt || null,
+    },
+    usage,
+    held,
   };
 }
 
 module.exports = {
   adminRules,
+  saveSettings,
+  releaseHolds,
+  periodKeys,
   getThreshold,
   parseThreshold,
   getEligibleFrom,
