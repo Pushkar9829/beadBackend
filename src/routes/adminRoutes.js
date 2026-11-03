@@ -53,6 +53,9 @@ router.get('/inventory/history', commerce.stockHistory);
 // Free Kundli: all staff may view and fix birth data; regenerating (spends AstrologyAPI credits) and deleting are admin-only.
 router.get('/kundli', kundli.adminList);
 router.put('/kundli/settings', requireRole('admin'), kundli.adminSaveSettings);
+// WhatsApp login: status and stats for staff; the on/off switch is admin-only.
+router.get('/whatsapp', require('../controllers/whatsappAuthController').adminOverview);
+router.put('/whatsapp/settings', requireRole('admin'), require('../controllers/whatsappAuthController').adminSave);
 router.get('/kundli/:id', kundli.adminGet);
 router.patch('/kundli/:id/details', kundli.adminUpdateDetails);
 router.post('/kundli/:id/generate', requireRole('admin'), kundli.adminGenerate);

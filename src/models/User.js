@@ -27,6 +27,10 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ['customer', 'admin', 'manager', 'staff'], default: 'customer' },
     permissions: { type: [String], default: [] },
     phone: String,
+    // Set only after the number was proven with a WhatsApp login code (E.164 digits, e.g. 919812345678).
+    // `phone` above is typed by the customer and never used to sign in.
+    whatsappPhone: String,
+    phoneVerifiedAt: Date,
     addresses: [addressSchema],
     groupIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CustomerGroup' }],
     tokenVersion: { type: Number, default: 0 },
@@ -45,6 +49,7 @@ userSchema.methods.toPublic = function toPublic() {
     role: this.role,
     permissions: this.permissions || [],
     phone: this.phone,
+    whatsappVerified: Boolean(this.whatsappPhone && this.phoneVerifiedAt),
     addresses: this.addresses,
     groupIds: this.groupIds,
     isActive: this.isActive !== false,
@@ -52,5 +57,7 @@ userSchema.methods.toPublic = function toPublic() {
     createdAt: this.createdAt,
   };
 };
+
+userSchema.index({ whatsappPhone: 1 }, { unique: true, partialFilterExpression: { whatsappPhone: { $type: 'string' } } });
 
 module.exports = mongoose.model('User', userSchema);

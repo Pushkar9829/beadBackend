@@ -101,7 +101,7 @@ morgan.token('path', (req) => (req.originalUrl || req.url || '').split('?')[0]);
 app.use(morgan(isProd ? ':remote-addr :method :path :status :res[content-length] - :response-time ms' : ':method :path :status :response-time ms'));
 function captureWebhookBody(req, _res, buf) {
   const url = req.originalUrl || req.url || '';
-  if (url.includes('/payments/cashfree/webhook') || url.includes('/shipping/ithink/webhook')) {
+  if (url.includes('/payments/cashfree/webhook') || url.includes('/shipping/ithink/webhook') || url.includes('/whatsapp/webhook')) {
     req.rawBody = buf.toString('utf8');
   }
 }
@@ -135,6 +135,12 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, brand: 'Kuberstones' 
 app.get('/api/content', contentController.get);
 app.use('/api', storeRoutes);
 app.use('/api/auth', authRoutes);
+// Meta WhatsApp webhook: subscription check (GET) and signature-checked delivery receipts (POST).
+{
+  const whatsapp = require('./controllers/whatsappAuthController');
+  app.get('/api/whatsapp/webhook', whatsapp.webhookVerify);
+  app.post('/api/whatsapp/webhook', whatsapp.webhook);
+}
 app.use('/api/categories', categoryRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/customizer', customizerRoutes);
