@@ -167,6 +167,7 @@ connectDb()
       }
     };
     await step('auth accounts', async () => {
+      await require('./models/User').migrateEmailIndex();
       const accounts = await ensureAuthAccounts();
       if (accounts.length) console.log(`Auth accounts added: ${accounts.join(', ')}`);
     });

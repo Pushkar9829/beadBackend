@@ -52,7 +52,7 @@ exports.adminList = asyncHandler(async (req, res) => {
     filter.$or = [{ 'birth.name': rx }, { email: rx }, { eligibleOrderNumber: rx }];
   }
   const [rows, total, counts] = await Promise.all([
-    Kundli.find(filter).select(LIST_FIELDS).populate('userId', 'name email').sort({ updatedAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
+    Kundli.find(filter).select(LIST_FIELDS).populate('userId', 'name email phone').sort({ updatedAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
     Kundli.countDocuments(filter),
     Kundli.aggregate([{ $group: { _id: '$status', n: { $sum: 1 } } }]),
   ]);

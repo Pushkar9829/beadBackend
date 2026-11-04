@@ -470,7 +470,7 @@ exports.removeCoupon = asyncHandler(async (req, res) => {
 exports.couponUsage = asyncHandler(async (req, res) => {
   const CouponUsage = require('../models/CouponUsage');
   const history = await CouponUsage.find({ couponId: req.params.id })
-    .populate('userId', 'name email')
+    .populate('userId', 'name email phone')
     .populate('orderId', 'orderNumber total')
     .sort({ createdAt: -1 })
     .limit(200)
@@ -626,7 +626,7 @@ exports.stockHistory = asyncHandler(async (req, res) => {
   const history = await StockAdjustment.find(filter)
     .populate('productId', 'name sku')
     .populate('beadId', 'name slug')
-    .populate('userId', 'name email')
+    .populate('userId', 'name email phone')
     .sort({ createdAt: -1 })
     .limit(200)
     .lean();

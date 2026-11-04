@@ -22,8 +22,10 @@ const addressSchema = new mongoose.Schema(
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    passwordHash: { type: String, required: true },
+    // Accounts are created and signed in with a WhatsApp code (whatsappPhone). Email and password are no
+    // longer collected; old records may still have them.
+    email: { type: String, lowercase: true, trim: true },
+    passwordHash: String,
     role: { type: String, enum: ['customer', 'admin', 'manager', 'staff'], default: 'customer' },
     permissions: { type: [String], default: [] },
     phone: String,
@@ -59,5 +61,18 @@ userSchema.methods.toPublic = function toPublic() {
 };
 
 userSchema.index({ whatsappPhone: 1 }, { unique: true, partialFilterExpression: { whatsappPhone: { $type: 'string' } } });
+// Unique only for records that have an email (many accounts now have none). Replaces the old "email_1".
+userSchema.index({ email: 1 }, { name: 'email_unique_if_set', unique: true, partialFilterExpression: { email: { $type: 'string' } } });
+
+/** One-time index migration: the old unique "email_1" index would reject a second account without email. */
+userSchema.statics.migrateEmailIndex = async function migrateEmailIndex() {
+  const indexes = await this.collection.indexes().catch(() => []);
+  const old = indexes.find((i) => i.name === 'email_1');
+  if (old) {
+    await this.collection.dropIndex('email_1');
+    console.log('[users] dropped old unique email_1 index (accounts may now have no email)');
+  }
+  await this.createIndexes().catch((err) => console.warn('[users] index build:', err.message));
+};
 
 module.exports = mongoose.model('User', userSchema);

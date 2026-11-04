@@ -2,11 +2,10 @@
 // 1. POST /api/auth/whatsapp/start { phone }            -> code sent (or 429 / 4xx)
 // 2. POST /api/auth/whatsapp/verify { phone, code }     -> { user, token } for a verified number,
 //                                                          or { needsProfile, signupToken } for a new one
-// 3. POST /api/auth/whatsapp/complete { signupToken, name, email } -> new account { user, token }
+// 3. POST /api/auth/whatsapp/complete { signupToken, name } -> new account { user, token }
 // A number only signs in to an account after it was proven with a code (User.whatsappPhone); the free-text
 // `phone` on old profiles is never trusted.
 const crypto = require('crypto');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Cart = require('../models/Cart');
@@ -16,7 +15,6 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { signToken, setAuthCookie, jwtSecret } = require('../middleware/auth');
 const wa = require('../services/whatsappService');
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const MAX_ATTEMPTS = 5;
 const RESEND_GAP_MS = 45 * 1000;
 const PER_PHONE_HOUR = 5;
@@ -125,21 +123,12 @@ exports.complete = asyncHandler(async (req, res) => {
   if (claims?.p !== 'wa_signup' || !claims.ph) return res.status(400).json({ message: 'Invalid sign-up request.', expired: true });
   const phone = claims.ph;
   const name = str(req.body?.name, 100);
-  const email = str(req.body?.email, 254).toLowerCase();
-  if (!name) return res.status(400).json({ message: 'Please enter your name.' });
-  if (!EMAIL_RE.test(email)) return res.status(400).json({ message: 'Please enter a valid email address.' });
+  if (name.length < 2) return res.status(400).json({ message: 'Please enter your name.' });
 
   const existing = await User.findOne({ whatsappPhone: phone });
   if (existing) return res.json(issue(res, existing)); // completed twice (double click)
-  if (await User.exists({ email })) {
-    // Never attach a number to an account the person has not signed in to.
-    return res.status(409).json({ message: 'An account with this email already exists. Sign in with your email and password instead.' });
-  }
   const user = await User.create({
     name,
-    email,
-    // No password yet: a random one nobody knows (email sign-in needs a password reset first).
-    passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10),
     phone: `+${phone}`,
     whatsappPhone: phone,
     phoneVerifiedAt: new Date(),
@@ -148,7 +137,7 @@ exports.complete = asyncHandler(async (req, res) => {
   await Cart.create({ userId: user._id, items: [] }).catch(() => {});
   try {
     const { notify } = require('../services/notificationService');
-    await notify({ type: 'new_customer', title: `New customer ${user.name}`, body: `${user.email} (WhatsApp)`, link: '/admin/customers' });
+    await notify({ type: 'new_customer', title: `New customer ${user.name}`, body: `${user.phone} (WhatsApp)`, link: '/admin/customers' });
   } catch {
     /* non-blocking */
   }

@@ -12,7 +12,14 @@ function str(value, max) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
 
-exports.register = asyncHandler(async (req, res) => {
+// Email + password sign-up and sign-in were removed: everyone uses "Continue with WhatsApp".
+const WHATSAPP_ONLY = { message: 'Sign in and sign up with your WhatsApp number now.', whatsappOnly: true };
+
+exports.register = asyncHandler(async (_req, res) => res.status(410).json(WHATSAPP_ONLY));
+exports.login = asyncHandler(async (_req, res) => res.status(410).json(WHATSAPP_ONLY));
+
+// eslint-disable-next-line no-unused-vars
+const legacyRegister = asyncHandler(async (req, res) => {
   const name = str(req.body.name, 100);
   const email = str(req.body.email, 254).toLowerCase();
   const password = typeof req.body.password === 'string' ? req.body.password : '';
@@ -48,7 +55,8 @@ exports.register = asyncHandler(async (req, res) => {
   res.status(201).json({ user: user.toPublic(), token });
 });
 
-exports.login = asyncHandler(async (req, res) => {
+// eslint-disable-next-line no-unused-vars
+const legacyLogin = asyncHandler(async (req, res) => {
   const email = str(req.body.email, 254).toLowerCase();
   const password = typeof req.body.password === 'string' ? req.body.password.slice(0, 128) : '';
   if (!email || !password) {
@@ -112,7 +120,7 @@ exports.updateProfile = asyncHandler(async (req, res) => {
   const { addresses } = req.body;
   const name = str(req.body.name, 100);
   if (name) req.user.name = name;
-  if (req.body.phone !== undefined) req.user.phone = str(req.body.phone, 20);
+  // The sign-in number (WhatsApp) is fixed; only an admin can change it (Team & users).
   if (Array.isArray(addresses)) req.user.addresses = sanitizeAddresses(addresses.slice(0, 20));
   await req.user.save();
   res.json({ user: req.user.toPublic() });

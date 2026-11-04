@@ -5,6 +5,7 @@ const { mergeHomeContent } = require('../data/homeContent');
 const { HOME_LAYOUT_VERSION } = require('../data/homeLayout');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { normalizePhone } = require('../services/whatsappService');
 const { asyncHandler, toStr, cleanBody, escapeRegex, UPDATE_OPTS } = require('../utils/asyncHandler');
 const { parsePage, pageMeta } = require('../utils/pagination');
 const { putFile, deleteStored, safeOriginalName } = require('../lib/objectStorage');
@@ -61,7 +62,7 @@ exports.users = asyncHandler(async (req, res) => {
   const q = toStr(req.query.q, 100);
   if (q) {
     const rx = new RegExp(escapeRegex(q), 'i');
-    filter.$or = [{ name: rx }, { email: rx }];
+    filter.$or = [{ name: rx }, { email: rx }, { phone: rx }, { whatsappPhone: rx }];
   }
   const { page, limit, skip } = parsePage(req, 25, 100);
   const [rows, total] = await Promise.all([
@@ -74,34 +75,25 @@ exports.users = asyncHandler(async (req, res) => {
 exports.createUser = asyncHandler(async (req, res) => {
   const body = req.body || {};
   const name = toStr(body.name, 100);
-  const email = toStr(body.email, 254).toLowerCase();
+  const phone = normalizePhone(body.phone);
   const role = toStr(body.role, 20);
   if (!name) return res.status(400).json({ message: 'Name is required.' });
-  if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ message: 'A valid email is required.' });
+  if (!phone) return res.status(400).json({ message: 'Enter the WhatsApp number they will sign in with, e.g. +91 98xxxxxxxx.' });
   if (!STAFF_ROLES.includes(role)) return res.status(400).json({ message: 'Role must be admin, manager or staff.' });
-  const { password, error } = readPassword(body.password);
-  if (error) return res.status(400).json({ message: error });
-  if (await User.exists({ email })) return res.status(409).json({ message: 'An account with this email already exists.' });
+  // They sign in with a WhatsApp code sent to this number; no password.
+  if (await User.exists({ whatsappPhone: phone })) return res.status(409).json({ message: 'An account with this WhatsApp number already exists. Change its role instead.' });
   let user;
   try {
-    user = await User.create({ name, email, role, passwordHash: await bcrypt.hash(password, 12), isActive: true });
+    user = await User.create({ name, role, phone: `+${phone}`, whatsappPhone: phone, isActive: true });
   } catch (err) {
-    if (err.code === 11000) return res.status(409).json({ message: 'An account with this email already exists.' });
+    if (err.code === 11000) return res.status(409).json({ message: 'An account with this WhatsApp number already exists.' });
     throw err;
   }
   res.status(201).json({ user: publicUser(user) });
 });
 
-exports.setUserPassword = asyncHandler(async (req, res) => {
-  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'User not found.' });
-  const { password, error } = readPassword(req.body?.password);
-  if (error) return res.status(400).json({ message: error });
-  const passwordHash = await bcrypt.hash(password, 12);
-  // Bumping tokenVersion signs the user out everywhere.
-  const result = await User.updateOne({ _id: req.params.id }, { $set: { passwordHash }, $inc: { tokenVersion: 1 } });
-  if (!result.matchedCount) return res.status(404).json({ message: 'User not found.' });
-  res.json({ ok: true });
-});
+// Passwords no longer exist (WhatsApp sign-in only).
+exports.setUserPassword = asyncHandler(async (_req, res) => res.status(410).json({ message: 'Accounts sign in with WhatsApp; there are no passwords.' }));
 
 exports.updateUser = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'User not found.' });
@@ -120,7 +112,17 @@ exports.updateUser = asyncHandler(async (req, res) => {
     if (!name) return res.status(400).json({ message: 'Name cannot be empty.' });
     $set.name = name;
   }
-  if (body.phone !== undefined) $set.phone = toStr(body.phone, 20);
+  if (body.phone !== undefined) {
+    // The phone is the WhatsApp sign-in number: changing it moves who can sign in, so admins only.
+    if (!actorIsAdmin) return res.status(403).json({ message: 'Only administrators can change a sign-in number.' });
+    const phone = normalizePhone(body.phone);
+    if (!phone) return res.status(400).json({ message: 'Enter a valid WhatsApp number, e.g. +91 98xxxxxxxx.' });
+    if (await User.exists({ whatsappPhone: phone, _id: { $ne: target._id } })) {
+      return res.status(409).json({ message: 'Another account already uses this WhatsApp number.' });
+    }
+    $set.phone = `+${phone}`;
+    $set.whatsappPhone = phone;
+  }
 
   let revokeTokens = false;
   const wantsRole = body.role !== undefined && body.role !== null && body.role !== '';

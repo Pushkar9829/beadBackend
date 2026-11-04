@@ -435,14 +435,14 @@ exports.listReturns = asyncHandler(async (req, res) => {
     const rx = new RegExp(escapeRegex(q), 'i');
     const [orderIds, userIds] = await Promise.all([
       Order.find({ $or: [{ orderNumber: rx }, { email: rx }, { contactName: rx }] }).select('_id').limit(5000).lean(),
-      User.find({ $or: [{ email: rx }, { name: rx }] }).select('_id').limit(5000).lean(),
+      User.find({ $or: [{ email: rx }, { name: rx }, { phone: rx }] }).select('_id').limit(5000).lean(),
     ]);
     filter.$or = [{ orderId: { $in: orderIds.map((o) => o._id) } }, { userId: { $in: userIds.map((u) => u._id) } }];
   }
   const [returns, total] = await Promise.all([
     ReturnRequest.find(filter)
       .populate('orderId', 'orderNumber total contactName email phone shippingAddress items shipment status payment')
-      .populate('userId', 'name email')
+      .populate('userId', 'name email phone')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -754,12 +754,12 @@ exports.assignGroups = asyncHandler(async (req, res) => {
 exports.remindAbandoned = asyncHandler(async (req, res) => {
   // timestamps: false keeps updatedAt (the customer's last activity, which the abandoned list is based on);
   // a plain save() bumped it and made the cart drop off the list.
-  const cart = await Cart.findByIdAndUpdate(req.params.id, { $set: { remindedAt: new Date() } }, { new: true, timestamps: false }).populate('userId', 'name email');
+  const cart = await Cart.findByIdAndUpdate(req.params.id, { $set: { remindedAt: new Date() } }, { new: true, timestamps: false }).populate('userId', 'name email phone');
   if (!cart) return res.status(404).json({ message: 'Cart not found.' });
   await notify({
     type: 'abandoned_cart',
     title: 'Abandoned cart marked as followed up',
-    body: cart.userId ? `${cart.userId.name} (${cart.userId.email})` : 'Unknown customer',
+    body: cart.userId ? `${cart.userId.name} (${cart.userId.phone || cart.userId.email || "no contact"})` : 'Unknown customer',
     link: '/admin/abandoned-carts',
     meta: { cartId: cart._id, email: cart.userId?.email },
   });
