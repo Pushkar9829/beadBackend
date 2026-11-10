@@ -1,13 +1,27 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 const multer = require('multer');
-const { ALLOWED_TYPES, MAX_VIDEO_BYTES, verifyUpload, safeOriginalName } = require('../lib/objectStorage');
+const { ALLOWED_TYPES, MAX_IMAGE_MB, MAX_VIDEO_MB, MAX_VIDEO_BYTES, verifyUpload, safeOriginalName } = require('../lib/objectStorage');
 
-const storage = multer.memoryStorage();
+// Disk, not memory: a multi-megabyte upload on a small EC2 instance otherwise sits entirely in the Node heap.
+const tmpDir = path.join(os.tmpdir(), 'kuberstones-uploads');
+const storage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    cb(null, tmpDir);
+  },
+  filename(_req, _file, cb) {
+    cb(null, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`);
+  },
+});
 
 const DECLARED_OK = new Set([...Object.keys(ALLOWED_TYPES), 'image/jpg', 'image/pjpeg', 'image/x-png']);
 
 const upload = multer({
   storage,
-  // Hard ceiling (video max). Images are further capped at 15MB after type verification.
+  // Hard ceiling (video max). Images are further capped after type verification.
   limits: { fileSize: MAX_VIDEO_BYTES, files: 1, fields: 20 },
   fileFilter: (_req, file, cb) => {
     const ok = DECLARED_OK.has(String(file.mimetype || '').toLowerCase());
@@ -20,12 +34,19 @@ const upload = multer({
   },
 });
 
+function discardUpload(req) {
+  const filePath = req.file?.path;
+  if (!filePath) return;
+  fs.unlink(filePath, () => {});
+}
+
 function uploadSingle(req, res, next) {
   upload.single('file')(req, res, (err) => {
     if (err) {
+      discardUpload(req);
       if (err.code === 'LIMIT_FILE_SIZE') {
         err.status = 413;
-        err.message = 'File is too large (max 15MB for images, 40MB for videos).';
+        err.message = `File is too large (max ${MAX_IMAGE_MB}MB for images, ${MAX_VIDEO_MB}MB for videos).`;
       } else {
         err.status = err.status || 400;
       }
@@ -38,8 +59,17 @@ function uploadSingle(req, res, next) {
       req.file.verifiedType = verified;
       req.file.mimetype = verified.mime;
       req.file.originalname = safeOriginalName(req.file.originalname);
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        discardUpload(req);
+      };
+      res.on('finish', cleanup);
+      res.on('close', cleanup);
       return next();
     } catch (verifyErr) {
+      discardUpload(req);
       req.file = undefined;
       return next(verifyErr);
     }

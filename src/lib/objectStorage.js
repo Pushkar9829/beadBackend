@@ -19,8 +19,10 @@ const ALLOWED_TYPES = {
 
 const MIME_ALIASES = { 'image/jpg': 'image/jpeg', 'image/pjpeg': 'image/jpeg', 'image/x-png': 'image/png' };
 
-const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 40 * 1024 * 1024;
+const MAX_IMAGE_MB = 50;
+const MAX_VIDEO_MB = 200;
+const MAX_IMAGE_BYTES = MAX_IMAGE_MB * 1024 * 1024;
+const MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024;
 
 const MP4_BRANDS = new Set(['isom', 'iso2', 'iso3', 'iso4', 'iso5', 'iso6', 'mp41', 'mp42', 'avc1', 'M4V ', 'M4VP', 'dash', 'mmp4', 'MSNV', 'f4v ']);
 
@@ -54,9 +56,24 @@ function sniffMime(buf) {
   return null;
 }
 
+/** First bytes only — enough for magic-byte checks without reading a large file into memory. */
+function sampleBytes(file) {
+  if (Buffer.isBuffer(file?.buffer) && file.buffer.length) return file.buffer.subarray(0, 512);
+  if (!file?.path) return Buffer.alloc(0);
+  const fd = fs.openSync(file.path, 'r');
+  try {
+    const buf = Buffer.alloc(512);
+    const n = fs.readSync(fd, buf, 0, 512, 0);
+    return buf.subarray(0, n);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
  * Verifies an uploaded file: declared mime must be whitelisted, magic bytes must match it,
  * and the size must be within the per-kind cap. Returns { mime, ext, kind } or throws (status 400/413).
+ * Accepts a multer memory file (`buffer`) or a disk file (`path`).
  */
 function verifyUpload(file) {
   const fail = (message, status = 400) => {
@@ -64,19 +81,19 @@ function verifyUpload(file) {
     err.status = status;
     return err;
   };
-  if (!file || !file.buffer) throw fail('No file uploaded.');
+  if (!file || (!file.buffer && !file.path)) throw fail('No file uploaded.');
   const declared = normalizeMime(file.mimetype);
   if (!ALLOWED_TYPES[declared]) throw fail('Only JPEG, PNG, WebP, GIF, AVIF images and MP4/WebM/MOV videos are allowed.');
-  const detected = sniffMime(file.buffer);
+  const detected = sniffMime(sampleBytes(file));
   if (!detected) throw fail('The file contents do not match an allowed image or video type.');
   const isoPair = new Set(['video/mp4', 'video/quicktime']);
   if (detected !== declared && !(isoPair.has(detected) && isoPair.has(declared))) {
     throw fail('The file contents do not match its declared type.');
   }
   const info = ALLOWED_TYPES[detected];
-  const size = file.size ?? file.buffer.length;
-  if (info.kind === 'image' && size > MAX_IMAGE_BYTES) throw fail('Image is too large (max 15MB).', 413);
-  if (info.kind === 'video' && size > MAX_VIDEO_BYTES) throw fail('Video is too large (max 40MB).', 413);
+  const size = Number(file.size) || (file.buffer ? file.buffer.length : 0);
+  if (info.kind === 'image' && size > MAX_IMAGE_BYTES) throw fail(`Image is too large (max ${MAX_IMAGE_MB}MB).`, 413);
+  if (info.kind === 'video' && size > MAX_VIDEO_BYTES) throw fail(`Video is too large (max ${MAX_VIDEO_MB}MB).`, 413);
   return { mime: detected, ext: info.ext, kind: info.kind };
 }
 
@@ -136,31 +153,40 @@ function publicUrl(key) {
   return `https://${bucket()}.s3.${region()}.amazonaws.com/${key}`;
 }
 
+function uploadBody(file) {
+  if (Buffer.isBuffer(file?.buffer)) return file.buffer;
+  if (file?.path) return fs.createReadStream(file.path);
+  return null;
+}
+
 async function putFile(file, { folder = 'other' } = {}) {
   if (!file) throw new Error('No file provided');
-  const body = file.buffer;
+  const body = uploadBody(file);
   if (!body) throw new Error('Upload buffer missing');
   // Extension and Content-Type come only from the verified (magic-byte) type, never the client.
   const verified = file.verifiedType || verifyUpload(file);
   const { key, filename } = objectKey(verified.ext, folder);
+  const size = Number(file.size) || (Buffer.isBuffer(body) ? body.length : 0);
 
   if (s3Enabled()) {
     const params = {
       Bucket: bucket(),
       Key: key,
       Body: body,
+      ContentLength: size,
       ContentType: verified.mime,
       ContentDisposition: 'inline',
       CacheControl: 'public, max-age=31536000, immutable',
     };
     if (process.env.S3_ACL) params.ACL = process.env.S3_ACL;
     await s3Client().send(new PutObjectCommand(params));
-    return { storage: 's3', key, filename, url: publicUrl(key), mimeType: verified.mime, size: body.length };
+    return { storage: 's3', key, filename, url: publicUrl(key), mimeType: verified.mime, size };
   }
 
   const dest = path.join(uploadDir, filename);
-  fs.writeFileSync(dest, body);
-  return { storage: 'local', key: filename, filename, url: `/uploads/${filename}`, mimeType: verified.mime, size: body.length };
+  if (file.path) fs.copyFileSync(file.path, dest);
+  else fs.writeFileSync(dest, body);
+  return { storage: 'local', key: filename, filename, url: `/uploads/${filename}`, mimeType: verified.mime, size };
 }
 
 const MIME_BY_EXT = {
@@ -240,6 +266,8 @@ module.exports = {
   sniffMime,
   safeOriginalName,
   ALLOWED_TYPES,
+  MAX_IMAGE_MB,
+  MAX_VIDEO_MB,
   MAX_IMAGE_BYTES,
   MAX_VIDEO_BYTES,
 };

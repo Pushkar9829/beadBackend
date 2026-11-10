@@ -201,11 +201,16 @@ connectDb()
     // Free Kundli: fixes the launch cutoff on first start and re-runs generations that died mid-way.
     await step('kundli jobs', () => require('./services/kundliService').startKundliJobs());
 
-    app.listen(port, () => {
+    const server = app.listen(port, () => {
       const { s3Enabled } = require('./lib/objectStorage');
       console.log(`Kuberstones API on http://localhost:${port}`);
       console.log(s3Enabled() ? 'Media uploads: Amazon S3' : 'Media uploads: local /uploads (set AWS_S3_BUCKET to use S3)');
     });
+    // Large media uploads can take several minutes on a slow connection. Node's default request
+    // timeout (5 min) cuts them off. The nginx in front of this process must allow the same body size.
+    server.requestTimeout = 15 * 60 * 1000;
+    server.headersTimeout = 15 * 60 * 1000 + 5000;
+    server.timeout = 0;
   })
   .catch((err) => {
     console.error('Failed to start', err);
