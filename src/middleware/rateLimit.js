@@ -1,6 +1,7 @@
 // Small fixed-window in-memory rate limiter. Per-process: put a shared store (e.g. Redis)
 // in front if the API is ever scaled to several instances.
-function rateLimit({ windowMs = 15 * 60 * 1000, max = 100, message = 'Too many requests. Please try again later.', key } = {}) {
+// `skip(req)` returning true lets a request through without counting it (e.g. signed-in staff).
+function rateLimit({ windowMs = 15 * 60 * 1000, max = 100, message = 'Too many requests. Please try again later.', key, skip } = {}) {
   const hits = new Map();
   const timer = setInterval(() => {
     const now = Date.now();
@@ -9,6 +10,7 @@ function rateLimit({ windowMs = 15 * 60 * 1000, max = 100, message = 'Too many r
   timer.unref();
 
   return (req, res, next) => {
+    if (skip && skip(req)) return next();
     const now = Date.now();
     const id = key ? key(req) : req.ip;
     let entry = hits.get(id);

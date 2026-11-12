@@ -123,7 +123,23 @@ app.use(
     },
   })
 );
-app.use('/api', rateLimit({ windowMs: 60 * 1000, max: Number(process.env.API_RATE_LIMIT_PER_MIN) || 300 }));
+// Global per-IP limit. Signed-in staff are not counted: an admin checking banner/content changes refreshes
+// often, and a blocked admin loses uploads and saves (customers on shared Jio/Airtel IPs share the limit).
+// The staff check only verifies the token signature + role (no DB); every admin route still runs full auth.
+// Sign-in, OTP, sign-up and order routes keep their own stricter limits.
+const STAFF_TOKEN_ROLES = new Set(['admin', 'manager', 'staff']);
+function isStaffToken(req) {
+  const header = String(req.headers.authorization || '');
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : req.cookies?.token;
+  if (!token) return false;
+  try {
+    const claims = require('jsonwebtoken').verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+    return STAFF_TOKEN_ROLES.has(claims?.role);
+  } catch {
+    return false;
+  }
+}
+app.use('/api', rateLimit({ windowMs: 60 * 1000, max: Number(process.env.API_RATE_LIMIT_PER_MIN) || 300, skip: isStaffToken }));
 app.use(csrfGuard);
 app.use(optionalAuth);
 
