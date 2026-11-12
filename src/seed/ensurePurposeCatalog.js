@@ -94,9 +94,11 @@ async function ensurePurposeCatalog() {
     const purpose = await Purpose.findOne({ slug: slugifyName(purposeName) });
     if (!purpose) continue;
     const slug = `${purpose.slug}-${slugifyName(name)}`.slice(0, 80);
+    // Match the intention that already belongs to this purpose. Older records use a short slug
+    // (self-love) rather than the prefixed one, and a slug-only lookup inserted a second copy.
     const { doc: intention, created } = await insertIfMissing(
       Intention,
-      { slug },
+      { purposeId: purpose._id, name },
       {
         purposeId: purpose._id,
         name,
