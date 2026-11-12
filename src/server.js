@@ -6,10 +6,6 @@ const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const { connectDb } = require('./config/db');
-const { ensureLayerBeads } = require('./seed/ensureLayerBeads');
-const { ensureAuthAccounts } = require('./seed/ensureAuthAccounts');
-const { ensureStudioLayers } = require('./seed/ensureStudioLayers');
-const { ensurePurposeCatalog } = require('./seed/ensurePurposeCatalog');
 const { notFound, errorHandler } = require('./middleware/error');
 const { optionalAuth, jwtSecret } = require('./middleware/auth');
 const { rateLimit } = require('./middleware/rateLimit');
@@ -158,38 +154,13 @@ const port = process.env.PORT || 5000;
 
 connectDb()
   .then(async () => {
-    // Each step is isolated so one failure doesn't skip the rest (e.g. studio layers have no request-time fallback).
-    const step = async (label, fn) => {
-      try {
-        await fn();
-      } catch (err) {
-        console.warn(`Startup seeding (${label}):`, err.message);
-      }
-    };
-    await step('auth accounts', async () => {
+    // Catalog, purposes, intentions, beads, layers, collections and FAQs are not written on boot.
+    // Live records stay as they are. Run a seed script by hand only when you mean to change them.
+    try {
       await require('./models/User').migrateEmailIndex();
-      const accounts = await ensureAuthAccounts();
-      if (accounts.length) console.log(`Auth accounts added: ${accounts.join(', ')}`);
-    });
-    await step('catalog beads', async () => {
-      const { created } = await require('./seed/ensureCatalogBeads').ensureCatalogBeads();
-      if (created.length) console.log(`Catalog beads added: ${created.join(', ')}`);
-    });
-    await step('layer beads', async () => {
-      const beads = await ensureLayerBeads();
-      if (beads.created.length) console.log(`Layer beads added: ${beads.created.join(', ')}`);
-      if (beads.priced?.length) console.log(`Catalog prices applied: ${beads.priced.join(', ')}`);
-    });
-    await step('purpose catalog', async () => {
-      const catalog = await ensurePurposeCatalog();
-      if (catalog?.intentions) console.log(`Purpose catalog: ${catalog.purposes} purposes, ${catalog.intentions} intentions.`);
-    });
-    await step('studio layers', async () => {
-      const layers = await ensureStudioLayers();
-      if (layers.created.length) console.log(`Studio layers synced: ${layers.created.length}`);
-    });
-    await step('collections', () => require('./services/collectionService').ensureDefaultCollections());
-    await step('faqs', () => require('./controllers/platformController').ensureDefaultFaqs());
+    } catch (err) {
+      console.warn('User index migration:', err.message);
+    }
 
     const { expireStalePendingOrders } = require('./services/orderExpiryService');
     const runExpiry = () =>
@@ -199,7 +170,11 @@ connectDb()
     setInterval(runExpiry, 10 * 60 * 1000).unref();
     runExpiry();
     // Free Kundli: fixes the launch cutoff on first start and re-runs generations that died mid-way.
-    await step('kundli jobs', () => require('./services/kundliService').startKundliJobs());
+    try {
+      await require('./services/kundliService').startKundliJobs();
+    } catch (err) {
+      console.warn('Kundli jobs:', err.message);
+    }
 
     const server = app.listen(port, () => {
       const { s3Enabled } = require('./lib/objectStorage');
