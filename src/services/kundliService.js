@@ -37,6 +37,7 @@ const QUEUE_STALE_MS = 2 * 60 * 1000;
 const SWEEP_MS = 2 * 60 * 1000;
 // Customers may change the details of a generated Kundli (which regenerates it, spending credits) once a
 // day, and at most KUNDLI_CUSTOMER_REGEN_CAP times in total. Admin regenerations are not limited.
+// Default wait between customer changes; the admin setting (Hours between changes) overrides it.
 const CUSTOMER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 // Minimum gap between two customer-started runs (e.g. retrying a failed Kundli).
 const CUSTOMER_RETRY_GAP_MS = 10 * 60 * 1000;
@@ -141,10 +142,19 @@ function activeSettings() {
     regenCap: capOr(doc.customerRegenCap, 'KUNDLI_CUSTOMER_REGEN_CAP', 3),
     retryCap: capOr(doc.customerRetryCap, 'KUNDLI_CUSTOMER_RETRY_CAP', 3),
     placesCap: capOr(doc.placesDailyCap, 'KUNDLI_PLACES_DAILY_CAP', 500),
+    cooldownHours: capOr(doc.customerCooldownHours, 'KUNDLI_CUSTOMER_COOLDOWN_HOURS', 24),
   };
 }
 const regenCap = () => activeSettings().regenCap;
 const retryCap = () => activeSettings().retryCap;
+const cooldownMs = () => activeSettings().cooldownHours * 60 * 60 * 1000;
+/** "once a day", "once every 12 hours", "at any time": how often a customer may change the details. */
+function changeEveryLabel(hours = activeSettings().cooldownHours) {
+  if (hours <= 0) return 'at any time';
+  if (hours === 24) return 'once a day';
+  if (hours % 24 === 0) return `once every ${hours / 24} days`;
+  return `once every ${hours} hour${hours === 1 ? '' : 's'}`;
+}
 
 const PERIOD_LABEL = { day: 'daily', week: 'weekly', month: 'monthly' };
 
@@ -180,6 +190,7 @@ async function saveSettings(body, user) {
   }
   if ('customerRegenCap' in body) $set.customerRegenCap = intOrNull(body.customerRegenCap, 'Customer updates', 0, 50);
   if ('customerRetryCap' in body) $set.customerRetryCap = intOrNull(body.customerRetryCap, 'Customer retries', 0, 50);
+  if ('customerCooldownHours' in body) $set.customerCooldownHours = intOrNull(body.customerCooldownHours, 'Hours between changes', 0, 720);
   if ('placesDailyCap' in body) $set.placesDailyCap = intOrNull(body.placesDailyCap, 'Place searches per day', 0, 100000);
   if ('eligibleFrom' in body) {
     const raw = toStr(body.eligibleFrom, 40);
@@ -596,7 +607,7 @@ async function startKundliJobs() {
  * customer is eligible.
  * - Not generated yet: generates when an eligible order exists, otherwise waits for one.
  * - Failed (no good Kundli yet): a retry, at most KUNDLI_CUSTOMER_RETRY_CAP times, 10 min apart.
- * - Generated: a regeneration with new details, once a day, at most KUNDLI_CUSTOMER_REGEN_CAP times.
+ * - Generated: a regeneration with new details, once per cooldown (admin setting, default a day), at most the regen cap.
  */
 async function saveDetails({ user, details }) {
   if (!user?._id) throw badRequest('Please sign in to save your birth details.', 401);
@@ -628,8 +639,8 @@ async function saveDetails({ user, details }) {
       if ((kundli.customerRegens || 0) >= regenCap()) {
         throw badRequest('Your Kundli has already been updated the maximum number of times. Please contact us to change the birth details.', 429, 'regen_cap');
       }
-      if (since(kundli.generatedAt) < CUSTOMER_COOLDOWN_MS) {
-        throw badRequest(`Birth details can be changed once a day. You can update them again after ${istWhen(new Date(kundli.generatedAt).getTime() + CUSTOMER_COOLDOWN_MS)}.`, 429);
+      if (since(kundli.generatedAt) < cooldownMs()) {
+        throw badRequest(`Birth details can be changed ${changeEveryLabel()}. You can update them again after ${istWhen(new Date(kundli.generatedAt).getTime() + cooldownMs())}.`, 429);
       }
       filter = { customerRegens: { $not: { $gte: regenCap() } } };
       inc = { customerRegens: 1 };
@@ -1066,7 +1077,7 @@ function customerView(kundli, now = Date.now()) {
   const generated = Boolean(k.generatedAt);
   const after = (d, ms) => (d && new Date(d).getTime() + ms > now ? new Date(new Date(d).getTime() + ms) : null);
   const gap = after(k.runStartedAt, CUSTOMER_RETRY_GAP_MS);
-  const cooldown = generated ? after(k.generatedAt, CUSTOMER_COOLDOWN_MS) : null;
+  const cooldown = generated && cooldownMs() > 0 ? after(k.generatedAt, cooldownMs()) : null;
   const latest = [gap, cooldown].filter(Boolean).sort((a, b) => b - a)[0] || null;
   const regensLeft = Math.max(0, regenCap() - (k.customerRegens || 0));
   const retriesLeft = Math.max(0, retryCap() - (k.customerRetries || 0));
@@ -1087,6 +1098,7 @@ function customerView(kundli, now = Date.now()) {
     eligibleAt: k.eligibleAt || null,
     updateFailed: Boolean(k.updateFailedAt) && k.status === 'ready',
     editableAfter: generated && k.status === 'ready' && regensLeft > 0 ? latest : null,
+    changeEvery: changeEveryLabel(),
     regensLeft: generated ? regensLeft : null,
     editLocked: generated && regensLeft === 0,
     retry: failedFirst ? { left: retriesLeft, after: retriesLeft > 0 ? gap : null } : null,
@@ -1181,6 +1193,8 @@ async function adminRules() {
     eligibleFromEnv: Boolean(envEligibleFrom()),
     customerRegenCap: cfg.regenCap,
     customerRetryCap: cfg.retryCap,
+    customerCooldownHours: cfg.cooldownHours,
+    changeEvery: changeEveryLabel(cfg.cooldownHours),
     places: { today: today?.count || 0, cap: cfg.placesCap },
     // Admin -> Kundli -> Settings: stored values (null = default / no limit) and what is in effect.
     settings: {
@@ -1190,11 +1204,13 @@ async function adminRules() {
       callsPerKundli: cfg.callsPerKundli,
       customerRegenCap: Number.isInteger(doc.customerRegenCap) ? doc.customerRegenCap : null,
       customerRetryCap: Number.isInteger(doc.customerRetryCap) ? doc.customerRetryCap : null,
+      customerCooldownHours: Number.isInteger(doc.customerCooldownHours) ? doc.customerCooldownHours : null,
       placesDailyCap: Number.isInteger(doc.placesDailyCap) ? doc.placesDailyCap : null,
       storedEligibleFrom: doc.eligibleFrom,
       defaults: {
         customerRegenCap: envInt('KUNDLI_CUSTOMER_REGEN_CAP', 3),
         customerRetryCap: envInt('KUNDLI_CUSTOMER_RETRY_CAP', 3),
+        customerCooldownHours: envInt('KUNDLI_CUSTOMER_COOLDOWN_HOURS', 24),
         placesDailyCap: envInt('KUNDLI_PLACES_DAILY_CAP', 500),
       },
       updatedAt: doc.updatedAt || null,

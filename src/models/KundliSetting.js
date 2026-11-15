@@ -20,6 +20,8 @@ const kundliSettingSchema = new mongoose.Schema(
     sections: { type: mongoose.Schema.Types.Mixed, default: {} },
     customerRegenCap: { type: Number, default: null },
     customerRetryCap: { type: Number, default: null },
+    // Hours a customer waits between changes to the birth details of a ready Kundli (null = default 24).
+    customerCooldownHours: { type: Number, default: null },
     placesDailyCap: { type: Number, default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
