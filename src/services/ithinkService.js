@@ -236,6 +236,18 @@ function shipmentPayload(order, { cfg, orderType, orderNumber }) {
   }
   const prepaid = order.payment?.method !== 'cod';
   const reverse = orderType === 'reverse';
+  // iThink rejects a booking unless total_amount equals its own sum:
+  //   products (price x qty) + shipping + giftwrap + transaction charges - discount.
+  // It has no tax field, so GST (and any rounding) goes into transaction_charges; otherwise an order
+  // with GST fails with "Invalid order total Amount (Calculated by System: X, Entered by User: Y)".
+  const products = productsFromOrder(order);
+  const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const itemsTotal = products.reduce((sum, p) => sum + Number(p.product_price) * Number(p.product_quantity), 0);
+  const shipping = money(order.shippingFee);
+  let discount = money(order.discount);
+  const remainder = money(Number(order.total || 0) - (itemsTotal + shipping - discount));
+  const extraCharges = remainder > 0 ? remainder : 0;
+  if (remainder < 0) discount = money(discount - remainder);
   return {
     waybill: '',
     order: orderNumber,
@@ -267,15 +279,15 @@ function shipmentPayload(order, { cfg, orderType, orderNumber }) {
     billing_phone: addr.phone,
     billing_alt_phone: '',
     billing_email: addr.email,
-    products: productsFromOrder(order),
+    products,
     shipment_length: String(cfg.lengthCm),
     shipment_width: String(cfg.widthCm),
     shipment_height: String(cfg.heightCm),
     weight: String(Math.max(0.1, Number(cfg.weightGrams || 400) / 1000)),
-    shipping_charges: String(order.shippingFee || 0),
+    shipping_charges: String(shipping),
     giftwrap_charges: '0',
-    transaction_charges: '0',
-    total_discount: String(order.discount || 0),
+    transaction_charges: String(extraCharges),
+    total_discount: String(discount),
     first_attemp_discount: '0',
     cod_charges: '0',
     // advance_amount is only for part-paid COD. Sending the full total here on a prepaid order made
