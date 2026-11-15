@@ -166,6 +166,81 @@ exports.adminGetOne = asyncHandler(async (req, res) => {
   res.json({ product: { ...product, attributes: asAttributes(product.attributes) } });
 });
 
+const FAMILIES = ['crystals', 'rudraksha', 'gemstones', 'others'];
+
+function flag(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const s = String(value).trim().toLowerCase();
+  if (['true', 'yes', '1', 'active'].includes(s)) return true;
+  if (['false', 'no', '0', 'inactive'].includes(s)) return false;
+  return fallback;
+}
+
+exports.adminImport = asyncHandler(async (req, res) => {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows.slice(0, 500) : [];
+  if (!rows.length) return res.status(400).json({ message: 'The sheet has no rows.' });
+  const categories = await Category.find().select('name slug').lean();
+  const categoryBy = new Map();
+  for (const category of categories) {
+    if (category.slug) categoryBy.set(String(category.slug).toLowerCase(), category._id);
+    if (category.name) categoryBy.set(String(category.name).trim().toLowerCase(), category._id);
+  }
+  let created = 0;
+  let updated = 0;
+  const failed = [];
+  for (const row of rows) {
+    const name = toStr(row.name, 200);
+    if (!name) {
+      failed.push({ name: '', message: 'Name is required.' });
+      continue;
+    }
+    const familyRaw = toStr(row.family, 40).toLowerCase();
+    const family = FAMILIES.includes(familyRaw) ? familyRaw : '';
+    const price = Number(String(row.price ?? '').replace(/[,₹\s]/g, ''));
+    if (!family || !Number.isFinite(price) || price < 0) {
+      failed.push({ name, message: 'Each row needs a family (crystals, rudraksha, gemstones, others) and a price.' });
+      continue;
+    }
+    const sku = toStr(row.sku, 80);
+    const slug = slugifyName(toStr(row.slug, 160) || name);
+    const categoryKey = toStr(row.category || row.categorySlug, 160).toLowerCase();
+    const images = String(row.image || row.images || '')
+      .split(/[|,]/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    const data = {
+      name,
+      family,
+      price,
+      stock: Math.max(0, Math.floor(Number(row.stock) || 0)),
+      description: toStr(row.description, 8000),
+      shortDescription: toStr(row.shortDescription || row.short, 500),
+      isActive: flag(row.isActive, true),
+      featured: flag(row.featured, false),
+    };
+    if (sku) data.sku = sku;
+    if (images.length) data.images = images;
+    const color = toStr(row.colorHex || row.color, 20);
+    if (color) data.colorHex = color;
+    if (categoryKey && categoryBy.has(categoryKey)) data.categoryId = categoryBy.get(categoryKey);
+    try {
+      const existing = sku ? await Product.findOne({ sku }) : await Product.findOne({ slug });
+      if (existing) {
+        await Product.updateOne({ _id: existing._id }, data);
+        updated += 1;
+      } else {
+        await Product.create({ ...data, slug, sku: sku || makeSku(name) });
+        created += 1;
+      }
+    } catch (err) {
+      failed.push({ name, message: err.message || 'Could not save this row.' });
+    }
+  }
+  res.json({ created, updated, failed: failed.slice(0, 30), failedCount: failed.length });
+});
+
 exports.adminCreate = asyncHandler(async (req, res) => {
   const data = cleanBody(req.body);
   takeNullsAsUnset(data, PRODUCT_NULLABLE); // nothing to unset on create; just drop the nulls
