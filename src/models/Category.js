@@ -5,7 +5,15 @@ const categorySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true },
-    family: { type: String, enum: ['crystals', 'rudraksha', 'gemstones'], required: true },
+    family: {
+      type: [{ type: String, enum: ['crystals', 'rudraksha', 'gemstones', 'others'] }],
+      castNonArrays: true,
+      required: true,
+      validate: {
+        validator: (value) => Array.isArray(value) && value.length > 0,
+        message: 'Pick at least one family.',
+      },
+    },
     parentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
     image: String,
     description: String,

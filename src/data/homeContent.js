@@ -23,7 +23,8 @@ const HOME_DEFAULTS = {
     // % of the hero image box; empty slug = no hotspot
     hotspot: { productSlug: '', x: 31, y: 45 },
     plaque: '',
-    // optional extra slides: [{ image, eyebrow, title, subtitle, primaryCta, secondaryCta, hotspot }]
+    textColor: '',
+    // optional extra slides: [{ image, eyebrow, title, subtitle, textColor, primaryCta, secondaryCta, hotspot }]
     slides: [],
   },
   // Tokens resolved from GET /api/home/summary: {stones} {purposes} {rating} {reviews} {products} {minPrice}.

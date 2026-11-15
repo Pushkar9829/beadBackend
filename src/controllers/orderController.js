@@ -804,6 +804,17 @@ exports.adminCancelShipment = asyncHandler(async (req, res) => {
   res.json({ order, remote });
 });
 
+// Link to iThink's shipping label PDF for the order's waybill (?type=return for the return waybill,
+// ?size=A6 for a 4x6 thermal label; A4 by default).
+exports.adminShipmentLabel = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id).select('shipment orderNumber').lean();
+  if (!order) return res.status(404).json({ message: 'Order not found.' });
+  const waybill = req.query.type === 'return' ? order.shipment?.returnWaybill : order.shipment?.waybill;
+  if (!waybill) return res.status(400).json({ message: 'Book a shipment first; there is no waybill to print.' });
+  const url = await ithink.shippingLabel(waybill, { pageSize: req.query.size });
+  res.json({ url, waybill });
+});
+
 async function trackOrderDoc(order) {
   const result = { forward: null, reverse: null };
   if (order.shipment?.waybill) {

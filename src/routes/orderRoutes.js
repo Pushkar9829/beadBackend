@@ -20,6 +20,7 @@ router.post('/admin/:id/refund', requireAuth, requireAdmin, ctrl.adminRefund);
 router.post('/admin/:id/ship', requireAuth, requireAdmin, ctrl.adminShip);
 router.post('/admin/:id/track', requireAuth, requireAdmin, ctrl.adminTrack);
 router.post('/admin/:id/cancel-shipment', requireAuth, requireAdmin, ctrl.adminCancelShipment);
+router.get('/admin/:id/label', requireAuth, requireAdmin, ctrl.adminShipmentLabel);
 router.post('/:id/track', requireAuth, perUser(10), ctrl.customerTrack);
 router.post('/:id/cashfree/verify', requireAuth, perUser(20), ctrl.verifyCashfree);
 router.post('/:id/cashfree/retry', requireAuth, perUser(5), ctrl.retryCashfree);

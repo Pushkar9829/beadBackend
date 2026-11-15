@@ -5,7 +5,7 @@ const productSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true },
-    family: { type: String, enum: ['crystals', 'rudraksha', 'gemstones'], required: true },
+    family: { type: String, enum: ['crystals', 'rudraksha', 'gemstones', 'others'], required: true },
     categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
     collectionIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Collection' }],
     sku: { type: String, trim: true, unique: true, sparse: true },

@@ -60,6 +60,8 @@ const siteContentSchema = new mongoose.Schema(
       subtitle: String,
       image: String,
       imageAlt: String,
+      plaque: String,
+      textColor: String,
       primaryCta: ctaSchema,
       secondaryCta: ctaSchema,
       hotspot: { type: mongoose.Schema.Types.Mixed },

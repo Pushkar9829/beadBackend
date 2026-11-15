@@ -15,10 +15,14 @@ function indiaPhone(phone) {
 }
 
 function formatOrderDate(value) {
+  // India date: the server runs on UTC, so orders placed 00:00-05:30 IST would otherwise get yesterday's date.
   const d = value ? new Date(value) : new Date();
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  return `${dd}-${mm}-${d.getFullYear()}`;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' })
+      .formatToParts(d)
+      .map((p) => [p.type, p.value])
+  );
+  return `${parts.day}-${parts.month}-${parts.year}`;
 }
 
 function fail(message, status = 400) {
@@ -274,7 +278,10 @@ function shipmentPayload(order, { cfg, orderType, orderNumber }) {
     total_discount: String(order.discount || 0),
     first_attemp_discount: '0',
     cod_charges: '0',
-    advance_amount: prepaid || reverse ? String(order.total || 0) : '0',
+    // advance_amount is only for part-paid COD. Sending the full total here on a prepaid order made
+    // iThink record (and text the customer) an order value of 0; payment_mode Prepaid already means
+    // nothing is collected on delivery.
+    advance_amount: reverse ? String(order.total || 0) : '0',
     cod_amount: !prepaid && !reverse ? String(order.total || 0) : '0',
     payment_mode: reverse || prepaid ? 'Prepaid' : 'COD',
     reseller_name: '',
@@ -341,6 +348,22 @@ async function cancelShipment(awb) {
   if (!waybill) throw fail('A waybill is required to cancel a shipment.');
   const { data } = await post('/api_v3/order/cancel.json', { awb_numbers: waybill });
   return firstResult(data) || data;
+}
+
+/** Shipping label PDF for one or more waybills; iThink returns a link to the file. */
+async function shippingLabel(awbs, { pageSize = 'A4' } = {}) {
+  const list = (Array.isArray(awbs) ? awbs : [awbs]).map((a) => String(a || '').trim()).filter(Boolean);
+  if (!list.length) throw fail('A waybill is required to print a label.');
+  const { json } = await post('/api_v3/shipping/label.json', {
+    awb_numbers: list.join(','),
+    page_size: String(pageSize).toUpperCase() === 'A6' ? 'A6' : 'A4',
+    display_cod_prepaid: '',
+    display_shipper_mobile: '',
+    display_shipper_address: '',
+  });
+  const url = String(json.file_name || json.data?.file_name || '').trim();
+  if (!/^https?:\/\//i.test(url)) throw fail('iThink did not return a label file.', 502);
+  return url;
 }
 
 async function listWarehouses(warehouseId) {
@@ -464,6 +487,7 @@ module.exports = {
   addOrder,
   track,
   cancelShipment,
+  shippingLabel,
   listWarehouses,
   listChangedAwbs,
   mapStatusToOrder,

@@ -3,6 +3,28 @@ const Product = require('../models/Product');
 const mongoose = require('mongoose');
 const { asyncHandler, slugifyName, cleanBody, toStr, UPDATE_OPTS, mergeNestedKeys } = require('../utils/asyncHandler');
 
+const FAMILIES = ['crystals', 'rudraksha', 'gemstones', 'others'];
+
+/** One slug or a list, kept in house order, with anything unknown dropped. */
+function familiesFrom(value) {
+  const raw = Array.isArray(value) ? value : value ? [value] : [];
+  const picked = new Set(raw.map((item) => toStr(item, 40)).filter((slug) => FAMILIES.includes(slug)));
+  return FAMILIES.filter((slug) => picked.has(slug));
+}
+
+/** A subcategory only sits under a parent that is in every selected family. */
+async function parentFamilyError(parentId, family) {
+  if (!parentId) return null;
+  if (!mongoose.isValidObjectId(parentId)) return 'Parent category not found.';
+  const parent = await Category.findById(parentId).select('family').lean();
+  if (!parent) return 'Parent category not found.';
+  const covered = familiesFrom(parent.family);
+  if (!family.every((slug) => covered.includes(slug))) {
+    return 'The parent must include every family selected for this category.';
+  }
+  return null;
+}
+
 function nestTree(categories) {
   const byId = Object.fromEntries(categories.map((c) => [String(c._id), { ...c, children: [] }]));
   const roots = [];
@@ -53,8 +75,10 @@ exports.adminCreate = asyncHandler(async (req, res) => {
   const body = cleanBody(req.body);
   const { parentId, image, description, sortOrder, isActive } = body;
   const name = toStr(body.name, 120);
-  const family = toStr(body.family, 40);
-  if (!name || !family) return res.status(400).json({ message: 'Name and family are required.' });
+  const family = familiesFrom(body.family);
+  if (!name || !family.length) return res.status(400).json({ message: 'Name and at least one family are required.' });
+  const parentError = await parentFamilyError(parentId, family);
+  if (parentError) return res.status(400).json({ message: parentError });
   const slug = slugifyName(toStr(body.slug, 120) || name);
   const category = await Category.create({
     name,
@@ -76,7 +100,19 @@ exports.adminUpdate = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'A category cannot be its own parent.' });
   }
   if (data.parentId === '') data.parentId = null;
+  if (data.family !== undefined) {
+    data.family = familiesFrom(data.family);
+    if (!data.family.length) return res.status(400).json({ message: 'Pick at least one family.' });
+  }
   if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Category not found.' });
+  if (data.parentId !== undefined || data.family !== undefined) {
+    const current = await Category.findById(req.params.id).select('family parentId').lean();
+    if (!current) return res.status(404).json({ message: 'Category not found.' });
+    const nextFamily = data.family || familiesFrom(current.family);
+    const nextParent = data.parentId !== undefined ? data.parentId : current.parentId;
+    const parentError = await parentFamilyError(nextParent, nextFamily);
+    if (parentError) return res.status(400).json({ message: parentError });
+  }
   // seo merges into the stored sub-object instead of replacing it.
   const category = await Category.findByIdAndUpdate(req.params.id, { $set: mergeNestedKeys(data, ['seo']) }, UPDATE_OPTS);
   if (!category) return res.status(404).json({ message: 'Category not found.' });
